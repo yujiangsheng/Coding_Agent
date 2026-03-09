@@ -36,6 +36,7 @@ _DEFAULT_CONFIG = {
         },
         "persistent": {"dir": "persistent_memory"},
     },
+    "output": {"generated_code_dir": "generated_code"},
     "evolution": {"strategy_threshold": 5, "distill_interval": 50},
     "security": {
         "blocked_commands": [

@@ -31,6 +31,10 @@ evolution:
   # 触发知识蒸馏的任务间隔
   distill_interval: 50
 
+output:
+  # 生成代码的输出目录
+  generated_code_dir: "generated_code"
+
 security:
   # 禁止执行的命令模式
   blocked_commands:

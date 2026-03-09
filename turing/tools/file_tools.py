@@ -18,6 +18,13 @@ from pathlib import Path
 from turing.tools.registry import tool
 
 
+def _get_generated_code_dir() -> str:
+    """获取生成代码的输出目录"""
+    from turing.config import Config
+    cfg = Config.load()
+    return cfg.get("output.generated_code_dir", "generated_code")
+
+
 def _check_path_security(path: str) -> str | None:
     """路径安全检查，返回错误信息或 None"""
     from turing.config import Config
@@ -169,3 +176,28 @@ def edit_file(path: str, old_str: str, new_str: str, occurrence: int = 0) -> dic
         return {"status": "ok", "path": str(p), "replacements": 1}
     except Exception as ex:
         return {"error": f"编辑文件失败: {ex}"}
+
+
+@tool(
+    name="generate_file",
+    description="在 generated_code 目录下创建文件。路径相对于 generated_code 目录，目录结构会自动创建。用于生成新代码文件。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "相对于 generated_code 目录的文件路径，例如 'my_project/src/main.py'",
+            },
+            "content": {"type": "string", "description": "文件内容"},
+        },
+        "required": ["path", "content"],
+    },
+)
+def generate_file(path: str, content: str) -> dict:
+    gen_dir = _get_generated_code_dir()
+    # 防止路径逃逸
+    normalized = os.path.normpath(path)
+    if normalized.startswith("..") or os.path.isabs(normalized):
+        return {"error": "路径不合法：不能使用绝对路径或 .. 逃逸"}
+    full_path = os.path.join(gen_dir, normalized)
+    return write_file(full_path, content)

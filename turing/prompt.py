@@ -54,6 +54,15 @@ SYSTEM_PROMPT = """\
 7. **汇报结果**：简洁说明完成了什么
 8. **反思总结**：评估任务执行质量，提炼经验教训，存入长期记忆/持久记忆
 
+## 代码输出目录
+
+- **所有生成的代码文件必须放在 `generated_code/` 目录下**
+- 使用 `generate_file` 工具创建新代码文件，路径自动以 `generated_code/` 为前缀
+- 在 `generated_code/` 下按项目名建立子目录，保持清晰的目录结构
+- 例如：`generate_file(path="my_project/src/main.py", content="...")`
+- 工具会自动创建所需的目录结构，无需手动创建目录
+- 只有修改已有项目文件时，才使用 `edit_file` 操作原始路径（不加 `generated_code/` 前缀）
+
 ## 代码规范
 
 - 遵循项目已有的代码风格和约定
