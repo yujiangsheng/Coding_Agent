@@ -1,0 +1,49 @@
+# Turing 编程智能体配置
+model:
+  name: "qwen3-coder:30b"
+  temperature: 0.3
+  # 反思/规划阶段的温度
+  reflect_temperature: 0.6
+  # 最大迭代轮次
+  max_iterations: 20
+
+memory:
+  data_dir: "turing_data"
+  working:
+    # 工作记忆占上下文窗口的最大比例
+    max_context_ratio: 0.3
+    # 压缩时保留最近的条目数
+    keep_recent: 5
+  long_term:
+    # ChromaDB 集合名
+    collection: "turing_long_term"
+    # 默认检索条数
+    default_top_k: 5
+    # 衰减因子（未使用的记忆逐步降权）
+    decay_factor: 0.95
+  persistent:
+    # 持久记忆目录
+    dir: "persistent_memory"
+
+evolution:
+  # 触发策略进化的最小同类经验数
+  strategy_threshold: 5
+  # 触发知识蒸馏的任务间隔
+  distill_interval: 50
+
+security:
+  # 禁止执行的命令模式
+  blocked_commands:
+    - "rm -rf /"
+    - "rm -rf ~"
+    - "mkfs"
+    - "dd if="
+    - ":(){:|:&};:"
+    - "DROP TABLE"
+    - "DROP DATABASE"
+  # 禁止访问的路径
+  blocked_paths:
+    - "/etc/shadow"
+    - "/etc/passwd"
+  # 允许操作的工作目录（为空则使用当前目录）
+  workspace_root: ""

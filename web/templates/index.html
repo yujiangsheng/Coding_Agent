@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Turing — 自进化编程智能体</title>
+
+  <!-- VS Code Codicons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@vscode/codicons@0.0.36/dist/codicon.css">
+  <!-- Highlight.js VS2015 theme (closest to VS Code dark) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/vs2015.min.css">
+  <!-- App styles -->
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ================================================================== -->
+  <!-- Title Bar                                                          -->
+  <!-- ================================================================== -->
+  <header class="titlebar">
+    <!-- macOS traffic light spacing -->
+    <div class="titlebar-macos"></div>
+
+    <!-- Menu items -->
+    <div class="titlebar-menus">
+      <div class="titlebar-menu-item" data-menu="file">File</div>
+      <div class="titlebar-menu-item" data-menu="edit">Edit</div>
+      <div class="titlebar-menu-item" data-menu="view">View</div>
+      <div class="titlebar-menu-item" data-menu="help">Help</div>
+    </div>
+
+    <!-- Command Center (VS Code's center widget) -->
+    <div class="command-center">
+      <button class="command-center-btn" id="open-command-palette" title="Show All Commands">
+        <i class="codicon codicon-search"></i>
+        <span class="command-center-label">Turing — 自进化编程智能体</span>
+        <span class="command-center-shortcut">⌘⇧P</span>
+      </button>
+    </div>
+
+    <!-- Right actions -->
+    <div class="titlebar-right">
+      <button class="titlebar-action" id="btn-toggle-panel" title="Toggle Panel (⌃`)">
+        <i class="codicon codicon-layout-panel"></i>
+      </button>
+      <button class="titlebar-action" id="btn-toggle-sidebar-vis" title="Toggle Sidebar (⌘B)">
+        <i class="codicon codicon-layout-sidebar-left"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- ================================================================== -->
+  <!-- Command Palette                                                    -->
+  <!-- ================================================================== -->
+  <div class="command-palette-overlay" id="command-palette-overlay">
+    <div class="command-palette-backdrop"></div>
+    <div class="command-palette">
+      <div class="command-palette-input-wrapper">
+        <i class="codicon codicon-search"></i>
+        <input type="text" class="command-palette-input" id="command-palette-input" placeholder="输入命令或搜索...">
+      </div>
+      <div class="command-palette-list" id="command-palette-list"></div>
+    </div>
+  </div>
+
+  <!-- ================================================================== -->
+  <!-- Workbench                                                          -->
+  <!-- ================================================================== -->
+  <div class="workbench">
+
+    <!-- Activity Bar -->
+    <nav class="activitybar">
+      <div class="activitybar-top">
+        <button class="activity-item active" data-panel="chat" title="对话 (⌘⇧E)">
+          <i class="codicon codicon-comment-discussion"></i>
+          <span class="activity-badge" id="badge-chat"></span>
+        </button>
+        <button class="activity-item" data-panel="memory" title="记忆系统 (⌘⇧M)">
+          <i class="codicon codicon-database"></i>
+          <span class="activity-badge" id="badge-memory"></span>
+        </button>
+        <button class="activity-item" data-panel="evolution" title="自我演化 (⌘⇧V)">
+          <i class="codicon codicon-pulse"></i>
+          <span class="activity-badge" id="badge-evolution"></span>
+        </button>
+        <button class="activity-item" data-panel="explorer" title="文件浏览器 (⌘⇧E)">
+          <i class="codicon codicon-files"></i>
+        </button>
+      </div>
+      <div class="activitybar-bottom">
+        <button class="activity-item" data-panel="settings" title="设置">
+          <i class="codicon codicon-settings-gear"></i>
+        </button>
+      </div>
+    </nav>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+
+      <!-- Chat Panel -->
+      <div class="sidebar-panel active" id="panel-chat">
+        <div class="sidebar-header">
+          <span>对话</span>
+          <div class="sidebar-header-actions">
+            <button class="icon-btn" id="btn-new-session" title="新会话">
+              <i class="codicon codicon-add"></i>
+            </button>
+            <button class="icon-btn" id="btn-clear-chat" title="清空">
+              <i class="codicon codicon-clear-all"></i>
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-body">
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>当前会话</span>
+            </div>
+            <div class="section-content" id="chat-history-list">
+              <div class="empty-hint">发送第一条消息开始对话</div>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>快捷操作</span>
+            </div>
+            <div class="section-content">
+              <button class="sidebar-action" id="btn-index-project">
+                <i class="codicon codicon-folder-library"></i>
+                <span>索引项目到 RAG</span>
+              </button>
+              <button class="sidebar-action" id="btn-learn-ai">
+                <i class="codicon codicon-lightbulb"></i>
+                <span>向 AI 工具学习</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Memory Panel -->
+      <div class="sidebar-panel" id="panel-memory">
+        <div class="sidebar-header">
+          <span>记忆系统</span>
+          <div class="sidebar-header-actions">
+            <button class="icon-btn" id="btn-refresh-memory" title="刷新">
+              <i class="codicon codicon-refresh"></i>
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-body">
+          <div class="sidebar-search">
+            <i class="codicon codicon-search"></i>
+            <input type="text" id="memory-search-input" placeholder="搜索记忆...">
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>统计</span>
+            </div>
+            <div class="section-content" id="memory-stats">
+              <div class="stat-row"><span>工作记忆</span><span class="stat-val" id="stat-working">0</span></div>
+              <div class="stat-row"><span>长期记忆</span><span class="stat-val" id="stat-longterm">0</span></div>
+              <div class="stat-row"><span>持久策略</span><span class="stat-val" id="stat-strategies">0</span></div>
+              <div class="stat-row"><span>项目数</span><span class="stat-val" id="stat-projects">0</span></div>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>搜索结果</span>
+            </div>
+            <div class="section-content" id="memory-search-results">
+              <div class="empty-hint">输入关键词搜索记忆</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Evolution Panel -->
+      <div class="sidebar-panel" id="panel-evolution">
+        <div class="sidebar-header">
+          <span>自我演化</span>
+          <div class="sidebar-header-actions">
+            <button class="icon-btn" id="btn-refresh-evolution" title="刷新">
+              <i class="codicon codicon-refresh"></i>
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-body">
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>演化统计</span>
+            </div>
+            <div class="section-content" id="evolution-stats">
+              <div class="stat-row"><span>累计任务</span><span class="stat-val" id="stat-tasks">0</span></div>
+              <div class="stat-row"><span>成功率</span><span class="stat-val" id="stat-success-rate">—</span></div>
+              <div class="stat-row"><span>进化事件</span><span class="stat-val" id="stat-evo-events">0</span></div>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>已学策略</span>
+            </div>
+            <div class="section-content" id="strategies-list">
+              <div class="empty-hint">暂无策略模板</div>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>进化日志</span>
+            </div>
+            <div class="section-content" id="evolution-log">
+              <div class="empty-hint">暂无日志</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Explorer / File Browser Panel -->
+      <div class="sidebar-panel" id="panel-explorer">
+        <div class="sidebar-header">
+          <span>文件浏览器</span>
+          <div class="sidebar-header-actions">
+            <button class="icon-btn" id="btn-explorer-up" title="全部折叠">
+              <i class="codicon codicon-collapse-all"></i>
+            </button>
+            <button class="icon-btn" id="btn-explorer-home" title="项目根目录">
+              <i class="codicon codicon-home"></i>
+            </button>
+            <button class="icon-btn" id="btn-explorer-refresh" title="刷新">
+              <i class="codicon codicon-refresh"></i>
+            </button>
+          </div>
+        </div>
+        <div class="sidebar-body">
+          <div class="explorer-path" id="explorer-path-display"></div>
+          <div class="explorer-tree" id="explorer-tree">
+            <div class="empty-hint">加载中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div class="sidebar-panel" id="panel-settings">
+        <div class="sidebar-header">
+          <span>设置</span>
+        </div>
+        <div class="sidebar-body">
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>模型配置</span>
+            </div>
+            <div class="section-content">
+              <div class="stat-row"><span>模型</span><span class="stat-val" style="color:var(--syn-string)">qwen3-coder:30b</span></div>
+              <div class="stat-row"><span>温度</span><span class="stat-val" style="color:var(--syn-number)">0.3</span></div>
+              <div class="stat-row"><span>最大迭代</span><span class="stat-val" style="color:var(--syn-number)">20</span></div>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>快捷键</span>
+            </div>
+            <div class="section-content">
+              <div class="stat-row"><span>命令面板</span><span class="stat-val" style="color:var(--text-secondary);font-family:var(--font-mono)">⌘⇧P</span></div>
+              <div class="stat-row"><span>新会话</span><span class="stat-val" style="color:var(--text-secondary);font-family:var(--font-mono)">⌘N</span></div>
+              <div class="stat-row"><span>切换面板</span><span class="stat-val" style="color:var(--text-secondary);font-family:var(--font-mono)">⌃`</span></div>
+              <div class="stat-row"><span>切换侧栏</span><span class="stat-val" style="color:var(--text-secondary);font-family:var(--font-mono)">⌘B</span></div>
+              <div class="stat-row"><span>发送消息</span><span class="stat-val" style="color:var(--text-secondary);font-family:var(--font-mono)">Enter</span></div>
+            </div>
+          </div>
+          <div class="sidebar-section">
+            <div class="section-title">
+              <i class="codicon codicon-chevron-down"></i>
+              <span>关于</span>
+            </div>
+            <div class="section-content about-info">
+              <p><strong>Turing</strong> v0.4.0</p>
+              <p>自进化编程智能体</p>
+              <p>Powered by Qwen3-Coder</p>
+              <p>Author: Jiangsheng Yu</p>
+              <p>License: MIT</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Sidebar Resize Handle -->
+    <div class="sash" id="sidebar-sash"></div>
+
+    <!-- Editor Group (Chat + Panel) -->
+    <div class="editor-group">
+
+      <!-- Tabs Bar -->
+      <div class="tabs-bar" id="editor-tabs">
+        <div class="tab active" data-tab="chat">
+          <i class="tab-icon codicon codicon-hubot"></i>
+          <span class="tab-label">Turing Chat</span>
+          <span class="tab-modified"></span>
+          <button class="tab-close" title="Close"><i class="codicon codicon-close"></i></button>
+        </div>
+        <!-- Code viewer tabs will be added dynamically here -->
+        <div class="tabs-actions">
+          <button class="icon-btn" id="btn-split-editor" title="Split Editor">
+            <i class="codicon codicon-split-horizontal"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Breadcrumb -->
+      <div class="breadcrumb">
+        <span>Turing</span>
+        <i class="codicon codicon-chevron-right"></i>
+        <span>Chat</span>
+        <i class="codicon codicon-chevron-right"></i>
+        <span id="breadcrumb-session">新会话</span>
+      </div>
+
+      <!-- Code Viewer Container (hidden by default) -->
+      <div class="code-viewer-container" id="code-viewer-container" style="display:none">
+        <div class="code-viewer-toolbar">
+          <div class="code-viewer-info">
+            <span class="code-viewer-filename" id="code-viewer-filename"></span>
+            <span class="code-viewer-lang" id="code-viewer-lang"></span>
+            <span class="code-viewer-size" id="code-viewer-size"></span>
+          </div>
+          <div class="code-viewer-actions">
+            <button class="icon-btn" id="btn-code-copy" title="复制全部">
+              <i class="codicon codicon-copy"></i>
+            </button>
+            <button class="icon-btn" id="btn-code-wrap" title="切换自动换行">
+              <i class="codicon codicon-word-wrap"></i>
+            </button>
+          </div>
+        </div>
+        <div class="code-viewer-body" id="code-viewer-body">
+          <div class="code-viewer-gutter" id="code-viewer-gutter"></div>
+          <pre class="code-viewer-pre" id="code-viewer-pre"><code id="code-viewer-code"></code></pre>
+        </div>
+      </div>
+
+      <!-- Chat Container -->
+      <div class="chat-container" id="chat-container">
+        <!-- Welcome Screen -->
+        <div class="welcome" id="welcome-screen">
+          <div class="welcome-logo">
+            <svg viewBox="0 0 100 100" width="80" height="80">
+              <defs>
+                <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#007acc" stop-opacity="0.25"/>
+                  <stop offset="50%" stop-color="#9b59b6" stop-opacity="0.15"/>
+                  <stop offset="100%" stop-color="#007acc" stop-opacity="0.05"/>
+                </linearGradient>
+                <linearGradient id="g2" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#007acc"/>
+                  <stop offset="100%" stop-color="#9b59b6"/>
+                </linearGradient>
+              </defs>
+              <circle cx="50" cy="50" r="45" fill="url(#g)"/>
+              <circle cx="50" cy="50" r="38" fill="none" stroke="url(#g2)" stroke-width="1.5" opacity="0.4">
+                <animateTransform attributeName="transform" type="rotate" from="0 50 50" to="360 50 50" dur="20s" repeatCount="indefinite"/>
+              </circle>
+              <circle cx="50" cy="50" r="28" fill="none" stroke="#007acc" stroke-width="0.5" opacity="0.2" stroke-dasharray="4 4">
+                <animateTransform attributeName="transform" type="rotate" from="360 50 50" to="0 50 50" dur="15s" repeatCount="indefinite"/>
+              </circle>
+              <text x="50" y="58" text-anchor="middle" fill="url(#g2)" font-size="32" font-weight="300" font-family="-apple-system, sans-serif">T</text>
+            </svg>
+          </div>
+          <h1 class="welcome-title">Turing</h1>
+          <p class="welcome-subtitle">自进化编程智能体 · 26+ 工具 · 4 层记忆 · Powered by Qwen3-Coder</p>
+          <div class="welcome-features">
+            <div class="feature-card">
+              <i class="codicon codicon-code"></i>
+              <span>代码读写</span>
+              <small>创建、编辑、重构</small>
+            </div>
+            <div class="feature-card">
+              <i class="codicon codicon-bug"></i>
+              <span>调试修复</span>
+              <small>定位、分析、修复</small>
+            </div>
+            <div class="feature-card">
+              <i class="codicon codicon-terminal"></i>
+              <span>命令执行</span>
+              <small>Shell、测试、构建</small>
+            </div>
+            <div class="feature-card">
+              <i class="codicon codicon-search"></i>
+              <span>语义搜索</span>
+              <small>TF-IDF、RAG</small>
+            </div>
+            <div class="feature-card">
+              <i class="codicon codicon-git-merge"></i>
+              <span>Git 操作</span>
+              <small>提交、分支、日志</small>
+            </div>
+            <div class="feature-card">
+              <i class="codicon codicon-pulse"></i>
+              <span>自我演化</span>
+              <small>反思、学习、进化</small>
+            </div>
+          </div>
+          <div class="welcome-hints">
+            <p class="hint-label">试试这些：</p>
+            <div class="hint-grid">
+              <button class="hint-btn" data-prompt="用 Python 实现一个 LRU Cache">
+                <i class="codicon codicon-sparkle"></i>
+                <span>用 Python 实现一个 LRU Cache</span>
+              </button>
+              <button class="hint-btn" data-prompt="帮我写一个 Flask REST API，实现用户 CRUD">
+                <i class="codicon codicon-sparkle"></i>
+                <span>写一个 Flask REST API</span>
+              </button>
+              <button class="hint-btn" data-prompt="分析当前项目结构并给出改进建议">
+                <i class="codicon codicon-sparkle"></i>
+                <span>分析项目结构并改进</span>
+              </button>
+              <button class="hint-btn" data-prompt="帮我写单元测试并运行验证">
+                <i class="codicon codicon-sparkle"></i>
+                <span>编写单元测试</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Messages -->
+        <div class="messages" id="messages"></div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-area">
+        <div class="input-wrapper">
+          <textarea
+            id="user-input"
+            placeholder="向 Turing 提问... (Enter 发送, Shift+Enter 换行)"
+            rows="1"
+          ></textarea>
+          <div class="input-actions">
+            <button class="stop-btn" id="stop-btn" title="停止生成 (Esc)">
+              <i class="codicon codicon-debug-stop"></i>
+            </button>
+            <button class="send-btn" id="send-btn" title="发送 (Enter)">
+              <i class="codicon codicon-send"></i>
+            </button>
+          </div>
+        </div>
+        <div class="input-meta">
+          <div class="input-meta-left">
+            <button class="input-meta-btn" id="model-display" title="当前模型">
+              <i class="codicon codicon-hubot"></i>
+              <span>qwen3-coder:30b</span>
+            </button>
+          </div>
+          <span class="input-hint">数据不出本机 · Turing v0.4.0</span>
+        </div>
+      </div>
+
+      <!-- Panel Sash -->
+      <div class="sash-h" id="panel-sash"></div>
+
+      <!-- Bottom Panel (Terminal/Output) -->
+      <div class="panel-area" id="panel-area">
+        <div class="panel-tabs">
+          <div class="panel-tab active" data-ptab="output">
+            输出
+            <span class="panel-badge" id="panel-output-badge"></span>
+          </div>
+          <div class="panel-tab" data-ptab="problems">
+            问题
+            <span class="panel-badge" id="panel-problems-badge">0</span>
+          </div>
+          <div class="panel-actions">
+            <button class="icon-btn" id="btn-clear-panel" title="Clear"><i class="codicon codicon-clear-all"></i></button>
+            <button class="icon-btn" id="btn-close-panel" title="Close Panel"><i class="codicon codicon-close"></i></button>
+          </div>
+        </div>
+        <div class="panel-body" id="panel-body">
+          <div style="color:var(--text-dim)">Turing 输出日志...</div>
+        </div>
+      </div>
+
+    </div><!-- /editor-group -->
+
+  </div><!-- /workbench -->
+
+  <!-- ================================================================== -->
+  <!-- Status Bar                                                         -->
+  <!-- ================================================================== -->
+  <footer class="statusbar">
+    <div class="statusbar-left">
+      <span class="statusbar-item" id="status-branch">
+        <i class="codicon codicon-source-control"></i> main
+      </span>
+      <span class="statusbar-item" id="status-indicator">
+        <i class="codicon codicon-check"></i> 就绪
+      </span>
+    </div>
+    <div class="statusbar-right">
+      <span class="statusbar-item" id="statusbar-memory">
+        <i class="codicon codicon-database"></i> 记忆: 0
+      </span>
+      <span class="statusbar-item" id="statusbar-tasks">
+        <i class="codicon codicon-pulse"></i> 任务: 0
+      </span>
+      <span class="statusbar-item" id="statusbar-model">
+        <i class="codicon codicon-hubot"></i> Turing v0.4.0
+      </span>
+    </div>
+  </footer>
+
+  <!-- ================================================================== -->
+  <!-- Notification Container                                             -->
+  <!-- ================================================================== -->
+  <div class="notification-container" id="notification-container"></div>
+
+</div><!-- /app -->
+
+<!-- ================================================================== -->
+<!-- Context Menu (shared, positioned dynamically)                      -->
+<!-- ================================================================== -->
+<div class="context-menu" id="context-menu"></div>
+
+<!-- ================================================================== -->
+<!-- Modals                                                              -->
+<!-- ================================================================== -->
+
+<!-- Modal: Index Project -->
+<div class="modal-overlay" id="modal-index" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <span>索引项目到 RAG 知识库</span>
+      <button class="icon-btn modal-close"><i class="codicon codicon-close"></i></button>
+    </div>
+    <div class="modal-body">
+      <label>项目路径</label>
+      <input type="text" id="index-path-input" placeholder="/path/to/project">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary modal-close">取消</button>
+      <button class="btn btn-primary" id="btn-do-index">
+        <i class="codicon codicon-folder-library" style="margin-right:4px"></i> 索引
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Learn from AI -->
+<div class="modal-overlay" id="modal-learn" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <span>向顶尖 AI 工具学习</span>
+      <button class="icon-btn modal-close"><i class="codicon codicon-close"></i></button>
+    </div>
+    <div class="modal-body">
+      <label>AI 工具</label>
+      <select id="learn-tool-select">
+        <option value="claude_opus">Claude Opus</option>
+        <option value="codex">Codex</option>
+        <option value="gemini">Gemini</option>
+        <option value="copilot">Copilot</option>
+      </select>
+      <label>任务类型</label>
+      <input type="text" id="learn-task-input" placeholder="如 bug_fix, feature, refactor">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary modal-close">取消</button>
+      <button class="btn btn-primary" id="btn-do-learn">
+        <i class="codicon codicon-lightbulb" style="margin-right:4px"></i> 学习
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<!-- Extra language packs (not in core bundle) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/dockerfile.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/toml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/ini.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/makefile.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/nginx.min.js"></script>
+<script src="/static/js/app.js"></script>
+
+</body>
+</html>
