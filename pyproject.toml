@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "turing-agent"
+version = "0.6.0"
+description = "Turing — 自进化编程智能体 (Self-Evolving Coding Agent)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Jiangsheng Yu" },
+]
+maintainers = [
+    { name = "Jiangsheng Yu" },
+]
+keywords = ["ai", "agent", "coding", "llm", "qwen", "self-evolving"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "ollama>=0.4.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+web = [
+    "flask>=3.0.0",
+]
+full = [
+    "chromadb>=0.5.0",
+    "duckduckgo-search>=6.0",
+    "flask>=3.0.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+turing = "main:main"
+
+[project.urls]
+Homepage = "https://github.com/yujiangsheng/Coding_Agent"
+Repository = "https://github.com/yujiangsheng/Coding_Agent"
+
+[tool.setuptools.packages.find]
+include = ["turing*"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
