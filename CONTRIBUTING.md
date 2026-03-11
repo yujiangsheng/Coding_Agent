@@ -26,25 +26,25 @@ pytest
 ├── requirements.txt           # 运行时依赖清单
 ├── coding_agent_prompt.md     # Agent Prompt 设计文档
 ├── turing/
-│   ├── __init__.py            # 包定义（版本号 v0.6.0）
-│   ├── agent.py               # Agent 主循环（ReAct + CoT 推理 + ETF 验证 + 并行执行）
+│   ├── __init__.py            # 包定义（版本号 v1.0.0）
+│   ├── agent.py               # Agent 主循环（10 阶段流水线 + 元认知 + Token-aware）
 │   ├── config.py              # YAML 配置管理（单例 + 深度合并）
-│   ├── prompt.py              # System Prompt（16 能力 + 7 原则 + CoT 框架 + ETF 循环）
-│   ├── tools/                 # 工具集（31+ 工具，13 个模块）
+│   ├── prompt.py              # System Prompt（41 能力 + 7 原则 + CoT + ETF）
+│   ├── tools/                 # 工具集（54 工具，13 个模块）
 │   │   ├── __init__.py        # 工具系统概述
 │   │   ├── registry.py        # @tool 装饰器 + Ollama Schema + 安全调度
-│   │   ├── file_tools.py      # read_file / write_file / edit_file
-│   │   ├── command_tools.py   # run_command（安全过滤 + 超时控制）
-│   │   ├── search_tools.py    # search_code / list_directory
-│   │   ├── memory_tools.py    # memory_read / memory_write / memory_reflect
-│   │   ├── external_tools.py  # rag_search / web_search
-│   │   ├── evolution_tools.py # learn_from_ai_tool / gap_analysis
-│   │   ├── git_tools.py       # git_status / git_diff / git_log / git_blame
-│   │   ├── project_tools.py   # detect_project / analyze_dependencies
-│   │   ├── quality_tools.py   # lint_code / format_code / type_check
-│   │   ├── refactor_tools.py  # batch_edit / rename_symbol / impact_analysis
-│   │   ├── ast_tools.py       # code_structure / call_graph / complexity_report
-│   │   └── test_tools.py      # run_tests / generate_tests
+│   │   ├── file_tools.py      # 文件操作 (9): read/write/edit/generate/multi_edit/move/copy/delete/find
+│   │   ├── command_tools.py   # 命令执行 (4): 持久化 Shell + 后台进程管理
+│   │   ├── search_tools.py    # 代码搜索 (3): search_code / list_directory / repo_map
+│   │   ├── memory_tools.py    # 记忆管理 (3): read / write / reflect
+│   │   ├── external_tools.py  # 外部搜索 (2): rag_search / web_search
+│   │   ├── evolution_tools.py # 自我演化 (10): 策略进化 + 蒸馏 + 失败恢复 + 自训练 + 探索
+│   │   ├── git_tools.py       # Git 操作 (8): status/diff/log/blame/add/commit/branch/stash
+│   │   ├── project_tools.py   # 项目分析 (2): detect_project / analyze_dependencies
+│   │   ├── quality_tools.py   # 代码质量 (3): lint_code / format_code / type_check
+│   │   ├── refactor_tools.py  # 批量重构 (3): batch_edit / rename_symbol / impact_analysis
+│   │   ├── ast_tools.py       # AST 分析 (3): code_structure / call_graph / complexity_report
+│   │   └── test_tools.py      # 测试 (2): run_tests(覆盖率+失败详情) / generate_tests
 │   ├── memory/                # 四层记忆系统
 │   │   ├── __init__.py        # 记忆架构概述
 │   │   ├── working.py         # L1 工作记忆（TF-IDF + 中文 bigram + 时间衰减）
@@ -56,16 +56,15 @@ pytest
 │   │   └── engine.py          # RAG 检索引擎（查询扩展 + 代码分块）
 │   └── evolution/
 │       ├── __init__.py        # 演化系统概述
-│       └── tracker.py         # 自我演化追踪器（反思/策略/蒸馏/学习/11维评分）
+│       ├── tracker.py         # 自我演化（15维评分 + 策略进化 + 失败恢复 + 自训练）
+│       └── metacognition.py   # 元认知引擎（6维认知雷达 + 偏差检测）
 ├── web/                       # Web UI（Flask SSE）
 │   ├── server.py              # HTTP API + SSE 聊天服务（9 个 API 端点）
-│   ├── templates/
-│   │   └── index.html         # VS Code 风格前端
-│   └── static/
-│       ├── css/style.css
-│       └── js/app.js
+│   ├── templates/index.html   # VS Code 风格前端
+│   └── static/                # CSS + JS 静态资源
+├── tests/                     # 测试套件（19 项全通过）
 ├── docs/
-│   ├── EXAMPLES.md            # 详细使用示例（15+ 场景）
+│   ├── EXAMPLES.md            # 详细使用示例（20+ 场景）
 │   └── ARCHITECTURE.md        # 系统架构设计文档
 ├── generated_code/            # Agent 生成的代码输出目录
 └── turing_data/               # 运行时数据（记忆/演化/RAG）
@@ -78,31 +77,34 @@ pytest
 ```
 用户输入
   ↓
-[1] 记忆预加载 — 从 L2(长期) + L3(持久) 检索相关经验
+[0] 记忆预加载 — 从 L2(长期) + L3(持久) 检索相关经验
   ↓
-[2] 策略注入 — 匹配任务类型，加载对应策略模板（6 大类型预播种）
+[1] 策略注入 — 匹配任务类型，加载对应策略模板（6 大类型预播种）
   ↓
-[3] CoT 推理规划 — 链式推理分层分解，评估复杂度，制定执行计划
+[2] 工具推荐 — 基于策略模板推荐最佳工具组合
+  ↓
+[3] 元认知初始化 — MetacognitiveEngine 6 维认知雷达启动
+  ↓
+[4] CoT 推理规划 — 链式推理分层分解，评估复杂度
   ↓  ├── 简单任务：快速通道直接执行
-  ↓  └── 复杂任务：LLM 结构化推理 → 问题分解 → 风险评估 → 方案选择
+  ↓  └── 复杂任务：LLM 结构化推理 → 问题分解 → 风险评估
   ↓
-[4] ReAct 循环 — LLM 推理 → 工具调用 → 观察结果（最多 20 轮）
-  ↓  ├── 并行执行 — 只读工具自动并发（ThreadPoolExecutor, max=4）
+[5] ReAct 循环 — LLM 推理 → 工具调用 → 观察结果（最多 20 轮）
+  ↓  ├── 并行执行 — 20 个只读工具自动并发（ThreadPoolExecutor, max=4）
+  ↓  ├── 持久化 Shell — env/cwd 跨调用保持 + 后台进程管理
   ↓  ├── 循环检测 — 连续 3 次相同调用自动中断
   ↓  ├── ETF 验证 — 编辑后自动注入测试/验证提示
   ↓  ├── 语义错误分析 — 连续失败时分析错误模式，智能修正参数
   ↓  ├── 动态温度 — planning(0.6) / execution(0.3) / debugging(0.45)
-  ↓  └── 上下文溢出管理 — 优先级滑动窗口 + 摘要折叠 + 工具结果压缩
+  ↓  └── Token-aware 上下文管理 — 优先级打分 + 智能压缩
   ↓
-[5] 输出结果
+[6] 错误恢复 — 失败恢复引擎（8 模式 × 3 级策略）
   ↓
-[6] LLM 深度反思 — 分析过程质量、工具选择、推理深度、可复用模式
+[7] 上下文管理 — Token-aware 优先级打分 + 智能压缩
   ↓
-[7] 策略进化检查 — 同类 ≥5 条经验时自动归纳策略（含工具路由建议）
+[8] LLM 深度反思 + 策略进化检查 + 知识蒸馏检查
   ↓
-[8] 知识蒸馏检查 — 每 50 次任务合并冗余、淘汰低质量
-  ↓
-[9] 十一维评分更新 — 综合评估代码/调试/架构/效率/安全等维度
+[9] 十五维能力评分更新 + 元认知报告
 ```
 
 ### 记忆检索算法

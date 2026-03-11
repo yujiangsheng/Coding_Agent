@@ -1,5 +1,7 @@
 # 使用示例
 
+> Turing v1.0.0 — 54 工具 · 13 模块 · 15 维评分
+
 ## 目录
 
 1. [基本对话 — 写代码](#1-基本对话--写代码)
@@ -17,6 +19,11 @@
 13. [AST 深度代码分析](#13-ast-深度代码分析)
 14. [跨文件影响分析](#14-跨文件影响分析)
 15. [策略预播种与能力评分](#15-策略预播种与能力评分)
+16. [持久化 Shell 与后台进程 (v1.0)](#16-持久化-shell-与后台进程-v10)
+17. [文件管理 (v1.0)](#17-文件管理-v10)
+18. [原子化多文件编辑 (v1.0)](#18-原子化多文件编辑-v10)
+19. [上下文压缩与撤销 (v1.0)](#19-上下文压缩与撤销-v10)
+20. [Diff 预览与 Repo Map (v1.0)](#20-diff-预览与-repo-map-v10)
 
 ---
 
@@ -468,5 +475,230 @@ You > 分析当前能力差距
 │ 记忆利用率         │ 8.0   │ █████████░░░     │
 │ 学习速率           │ 8.5   │ ██████████░░     │
 │ 验证覆盖率         │ 8.5   │ ██████████░░     │
+│ 错误恢复力         │ 8.0   │ █████████░░░     │
+│ 自主性             │ 8.5   │ ██████████░░     │
+│ 上下文管理         │ 9.0   │ ███████████░     │
+│ 持续改进           │ 8.0   │ █████████░░░     │
 └────────────────────┴───────┴──────────────────┘
 ```
+
+## 16. 持久化 Shell 与后台进程 (v1.0)
+
+v1.0.0 引入持久化 Shell 会话，环境变量和工作目录跨调用保持。
+
+### 环境变量保持
+
+```
+You > 帮我设置环境变量然后验证
+
+🔧 调用工具: run_command {"command": "export API_KEY=sk-123456 && export DEBUG=true"}
+   ✓ {"exit_code": 0}
+🔧 调用工具: run_command {"command": "echo $API_KEY && echo $DEBUG"}
+   ✓ {"exit_code": 0, "output": "sk-123456\ntrue"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 环境变量已设置并保持：                         │
+│ • API_KEY=sk-123456                           │
+│ • DEBUG=true                                   │
+│ 在后续命令中可直接使用这些变量。               │
+└──────────────────────────────────────────────┘
+```
+
+### 工作目录保持
+
+```
+You > 进入项目目录
+
+🔧 调用工具: run_command {"command": "cd /Users/me/project && pwd"}
+   ✓ {"exit_code": 0, "output": "/Users/me/project"}
+🔧 调用工具: run_command {"command": "ls src/"}
+   ✓ {"exit_code": 0, "output": "main.py  utils.py  config.py"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 已切换到 /Users/me/project，后续命令都在      │
+│ 该目录下执行。                                 │
+└──────────────────────────────────────────────┘
+```
+
+### 后台进程管理
+
+```
+You > 启动开发服务器
+
+🔧 调用工具: run_background {"command": "python -m flask run --port 5001", "label": "dev-server"}
+   ✓ {"pid": 12345, "label": "dev-server", "status": "running"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 开发服务器已在后台启动 (PID: 12345)            │
+│ 访问 http://127.0.0.1:5001                    │
+└──────────────────────────────────────────────┘
+
+You > 查看服务器日志
+
+🔧 调用工具: check_background {"label": "dev-server"}
+   ✓ {"pid": 12345, "status": "running", "output": "* Running on http://127.0.0.1:5001"}
+
+You > 停止服务器
+
+🔧 调用工具: stop_background {"label": "dev-server"}
+   ✓ {"stopped": true, "pid": 12345}
+```
+
+## 17. 文件管理 (v1.0)
+
+v1.0.0 新增完整的文件管理工具。
+
+### 文件搜索
+
+```
+You > 找到所有包含 "TODO" 的 Python 文件
+
+🔧 调用工具: find_files {"pattern": "*.py", "content_pattern": "TODO", "path": "."}
+   ✓ {"matches": [{"path": "src/api.py", "lines": [42, 67]}, ...], "count": 5}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 找到 5 个文件包含 TODO：                       │
+│ • src/api.py (行 42, 67)                       │
+│ • src/utils.py (行 15)                         │
+│ • tests/test_api.py (行 8)                     │
+│ • ...                                          │
+└──────────────────────────────────────────────┘
+```
+
+### 文件操作
+
+```
+You > 把 src/old_module.py 移到 src/legacy/ 目录下
+
+🔧 调用工具: move_file {"source": "src/old_module.py", "destination": "src/legacy/old_module.py"}
+   ✓ {"status": "ok", "source": "src/old_module.py", "destination": "src/legacy/old_module.py"}
+
+You > 复制 config.yaml 做一个备份
+
+🔧 调用工具: copy_file {"source": "config.yaml", "destination": "config.yaml.bak"}
+   ✓ {"status": "ok"}
+
+You > 删除临时文件
+
+🔧 调用工具: delete_file {"path": "tmp/debug.log"}
+   ✓ {"status": "ok", "deleted": "tmp/debug.log"}
+```
+
+## 18. 原子化多文件编辑 (v1.0)
+
+`multi_edit` 支持事务性编辑多个文件，任意一步失败自动回滚。
+
+```
+You > 把所有文件中的 v0.9.0 更新为 v1.0.0
+
+🔧 调用工具: multi_edit {"edits": [
+    {"path": "pyproject.toml", "old_str": "version = \"0.9.0\"", "new_str": "version = \"1.0.0\""},
+    {"path": "turing/__init__.py", "old_str": "__version__ = \"0.9.0\"", "new_str": "__version__ = \"1.0.0\""},
+    {"path": "README.md", "old_str": "v0.9.0", "new_str": "v1.0.0"}
+  ]}
+   ✓ {"status": "ok", "edits_applied": 3, "files_modified": 3}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 3 个文件已原子化更新为 v1.0.0。                │
+│ 如果任一编辑失败，所有变更都会自动回滚。       │
+└──────────────────────────────────────────────┘
+```
+
+## 19. 上下文压缩与撤销 (v1.0)
+
+### /compact — 压缩上下文
+
+```
+You > /compact
+
+┌─ Turing ─────────────────────────────────────┐
+│ 上下文已压缩：                                 │
+│ • 压缩前: 28,672 tokens                       │
+│ • 压缩后: 12,480 tokens                       │
+│ • 保留: 系统提示 + 最近 4 轮对话 + 关键结果    │
+│ • 移除: 早期历史 + 大输出 + 冗余消息           │
+└──────────────────────────────────────────────┘
+```
+
+### /undo — 撤销文件修改
+
+```
+You > /undo
+
+🔧 调用工具: git_diff {"staged": false}
+   ✓ 显示最近修改的 diff
+
+┌─ Turing ─────────────────────────────────────┐
+│ 已撤销上一次文件修改：                         │
+│ • 恢复: src/api.py (3 行变更已回滚)            │
+└──────────────────────────────────────────────┘
+```
+
+### /diff — 查看当前变更
+
+```
+You > /diff
+
+┌─ Diff 预览 ──────────────────────────────────┐
+│ src/api.py:                                    │
+│   - old_function()                             │
+│   + new_function()                             │
+│ src/utils.py:                                  │
+│   + import logging                             │
+│   + logger = logging.getLogger(__name__)        │
+└──────────────────────────────────────────────┘
+```
+
+## 20. Diff 预览与 Repo Map (v1.0)
+
+### Repo Map — 代码仓库结构
+
+```
+You > 生成项目的 Repo Map
+
+🔧 调用工具: repo_map {"path": "."}
+   ✓ {"map": "..."}
+
+┌─ Repo Map ───────────────────────────────────┐
+│ turing/                                        │
+│ ├── agent.py                                   │
+│ │   └── class TuringAgent                      │
+│ │       ├── chat() → Generator                 │
+│ │       ├── start_session()                    │
+│ │       └── ... (19 methods)                   │
+│ ├── config.py                                  │
+│ │   └── class Config                           │
+│ │       ├── get(key_path)                      │
+│ │       └── _deep_merge()                      │
+│ ├── memory/                                    │
+│ │   ├── manager.py                             │
+│ │   │   └── class MemoryManager                │
+│ │   ├── working.py                             │
+│ │   │   └── class WorkingMemory                │
+│ │   └── ...                                    │
+│ └── tools/ (13 modules, 54 tools)              │
+└──────────────────────────────────────────────┘
+```
+
+### 测试覆盖率 (v1.0)
+
+```
+You > 运行测试并生成覆盖率报告
+
+🔧 调用工具: run_tests {"path": ".", "coverage": true}
+   ✓ {"exit_code": 0, "output": "19 passed",
+      "coverage": {"total": 78, "files": {"agent.py": 82, "config.py": 95, ...}},
+      "failures": []}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 测试结果：19 通过 / 0 失败                     │
+│ 整体覆盖率：78%                                │
+│ • agent.py: 82%                                │
+│ • config.py: 95%                               │
+│ • tools/registry.py: 100%                      │
+└──────────────────────────────────────────────┘
+```
+
+---
+
+*文档版本: v1.0.0 · 最后更新: 2025-07*

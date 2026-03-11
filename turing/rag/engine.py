@@ -47,6 +47,7 @@ class RAGEngine:
             self._collections = {}
 
     def _get_collection(self, source: str):
+        """获取或创建指定 source 的 ChromaDB collection。"""
         if not HAS_CHROMADB:
             return None
         if source not in self._collections:

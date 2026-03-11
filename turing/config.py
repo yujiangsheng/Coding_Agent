@@ -113,10 +113,12 @@ class Config:
 
     @classmethod
     def load(cls, config_path: str | None = None) -> "Config":
+        """加载配置单例，首次调用时初始化，后续调用返回同一实例。"""
         if cls._instance is None:
             cls._instance = cls(config_path)
         return cls._instance
 
     @classmethod
     def reset(cls):
+        """重置单例，下次 load() 将重新初始化。主要用于测试。"""
         cls._instance = None

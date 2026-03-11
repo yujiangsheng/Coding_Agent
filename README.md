@@ -4,12 +4,14 @@
 
 **自进化编程智能体 · Self-Evolving Coding Agent**
 
-*基于 Qwen3-Coder 本地大模型，具备四层记忆系统、31+ 内置工具、AST 代码分析和持续自我演化能力*
+*多模型 AI Coding Agent，具备四层记忆、58 内置工具、多 Provider LLM 路由、基准评测、元认知、自我演化*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-green.svg)](https://python.org)
-[![Model: Qwen3-Coder](https://img.shields.io/badge/Model-Qwen3--Coder%3A30B-orange.svg)](https://ollama.com)
-[![Version](https://img.shields.io/badge/Version-0.6.0-purple.svg)](CONTRIBUTING.md)
+[![Model: Multi-Provider](https://img.shields.io/badge/Model-Ollama%20%7C%20OpenAI%20%7C%20Anthropic%20%7C%20DeepSeek-orange.svg)](https://ollama.com)
+[![Version](https://img.shields.io/badge/Version-2.0.0-purple.svg)](CONTRIBUTING.md)
+[![Tools](https://img.shields.io/badge/Tools-58-brightgreen.svg)](#-工具一览58-工具15-个模块)
+[![Tests](https://img.shields.io/badge/Tests-19%20passed-success.svg)](tests/)
 
 </div>
 
@@ -17,58 +19,86 @@
 
 ## ✨ 特性
 
+### 核心能力
+
 - **🧠 四层记忆系统** — 工作记忆 / 长期记忆 / 持久记忆 / 外部记忆（RAG），TF-IDF 中文检索，越用越懂你
-- **🔄 自我演化** — 任务后自动反思，积累经验，策略进化，知识蒸馏，十一维能力评分
-- **🔧 31+ 内置工具** — 文件操作、命令执行、代码搜索、Git 操作、测试运行、代码质量检查、批量重构、项目分析、AST 代码分析、记忆管理、RAG 检索、Web 搜索、AI 工具学习
+- **🔧 58 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析、批量重构、基准评测等
+- **🤖 多 Provider LLM 路由** — 支持 Ollama / OpenAI / Anthropic / DeepSeek，按任务复杂度自动路由到最优模型，失败时自动 fallback
+- **📊 基准评测框架** — 内置 12 道 HumanEval 风格编程题，pass@k 评分 + 业界分数对比（Claude Opus / GPT-4o / Gemini），自修复评测
+- **🔄 自我演化** — 任务反思 → 经验积累 → 策略进化 → 知识蒸馏 → AI 工具对比学习 → 失败恢复引擎 → 自训练模拟器 → 15 维评分系统
 - **🧩 高级推理引擎** — 链式推理（CoT）分层任务分解、动态温度调节、编辑-测试-修复（ETF）自动验证循环
-- **⚡ 并行工具执行** — 多个只读工具自动并发运行（ThreadPoolExecutor），大幅提升多文件操作效率
-- **🎯 智能工具路由** — 基于任务类型的策略预播种与工具推荐，冷启动即有专家级表现
-- **🔍 语义错误分析** — 连续错误模式检测、参数自动修正、智能根因分析
-- **🌳 AST 深度代码分析** — 代码结构提取、函数调用关系图、圈复杂度报告、跨文件影响分析
-- **📚 向顶尖 AI 学习** — 分析 Claude Opus / Codex / Gemini / Copilot 的策略并内化
-- **🌐 双界面** — 交互式 CLI（Rich 渲染）+ VS Code 风格 Web UI（Flask SSE）
-- **🔒 安全守护** — 命令黑名单、路径黑名单、输出截断，防止误操作
-- **🏠 完全本地** — 基于 Ollama 本地部署，数据不出本机
+- **🔍 元认知系统** — 6 维认知雷达、偏差检测、置信校准、认知自适应
+- **🧠 智能上下文收集** — import 链追踪 + 错误堆栈解析 + 符号引用查找，精准减少无效 token 占用
+- **⚡ 并行工具执行** — 21 个只读工具自动并发运行（ThreadPoolExecutor），大幅提升多文件操作效率
+- **🔒 安全守护** — 命令黑名单、路径黑名单、输出截断、非空目录删除保护
+- **🏠 本地优先** — 默认基于 Ollama 本地部署，可选接入云端 LLM
+
+### 对标顶尖工具的能力（v2.0）
+
+| 能力 | Turing | Aider | Cursor | Claude Code | Codex |
+|------|--------|-------|--------|-------------|-------|
+| 多模型 LLM 路由 | ✅ | ✅ | ✅ | ❌ | ✅ |
+| 基准评测框架 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 智能上下文收集 | ✅ | ❌ | ✅ | ✅ | ✅ |
+| 持久化 Shell 会话 | ✅ | ❌ | ❌ | ✅ | ✅ |
+| 后台进程管理 | ✅ | ❌ | ❌ | ❌ | ✅ |
+| 原子化多文件编辑 | ✅ | ❌ | ✅ | ❌ | ✅ |
+| Token-aware 上下文管理 | ✅ | ❌ | ✅ | ✅ | ✅ |
+| 自动项目索引 | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Diff 预览 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Git 完整工作流 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Repo Map | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Auto Lint-Fix | ✅ | ✅ | ✅ | ❌ | ❌ |
+| 上下文压缩 (/compact) | ✅ | ❌ | ❌ | ✅ | ❌ |
+| 一键撤销 (/undo) | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 自我演化记忆 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 元认知监控 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 失败恢复引擎 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 本地优先 + 云端可选 | ✅ | ✅ | ❌ | ❌ | ❌ |
 
 ## 📋 架构概览
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│            CLI (main.py) / Web UI (web/server.py)           │
-│           交互式 REPL · 单次执行 · Flask SSE 服务           │
-├─────────────────────────────────────────────────────────────┤
-│                   TuringAgent (agent.py)                     │
-│  记忆预加载 → 策略注入 → CoT推理 → 工具调用循环 → 反思总结  │
-│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
-│  │CoT 推理 │ │循环检测  │ │上下文管理│ │并行工具执行      │ │
-│  │任务分解 │ │错误分析  │ │优先级窗口│ │ThreadPoolExecutor│ │
-│  │动态温度 │ │自动修正  │ │摘要折叠  │ │只读工具并发      │ │
-│  └─────────┘ └──────────┘ └──────────┘ └──────────────────┘ │
-│                  ┌───────────────────┐                       │
-│                  │ETF 编辑-测试-修复 │                       │
-│                  │自动验证循环       │                       │
-│                  └───────────────────┘                       │
-├──────────┬───────────┬──────────┬───────────────────────────┤
-│  Tools   │  Memory   │   RAG    │   Evolution               │
-│ (31+个   │  (4层)    │  Engine  │   Tracker                 │
-│ 13模块)  │           │          │                           │
-├──────────┼───────────┼──────────┼───────────────────────────┤
-│ file     │ L1 working│ ChromaDB │ 经验积累                  │
-│ command  │ L2 long   │  / JSON  │ 策略进化                  │
-│ search   │ L3 persist│ fallback │ 知识蒸馏                  │
-│ memory   │ L4 外部   │          │ AI 工具学习               │
-│ git      │           │ 查询扩展 │ 策略预播种                │
-│ test     │ TF-IDF    │ 代码分块 │ 十一维评分                │
-│ quality  │ 中文分词  │          │ 工具效率分析              │
-│ refactor │ 跨层排序  │          │ 决策质量追踪              │
-│ project  │ Jaccard   │          │                           │
-│ ast      │  去重     │          │                           │
-│ rag/web  │ 优先级    │          │                           │
-│ evolve   │  滑动窗口 │          │                           │
-└──────────┴───────────┴──────────┴───────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│              CLI (main.py) / Web UI (web/server.py)                  │
+│             交互式 REPL · 单次执行 · Flask SSE 服务                  │
+├──────────────────────────────────────────────────────────────────────┤
+│                     TuringAgent (agent.py)                           │
+│  记忆预加载 → 策略注入 → 工具推荐 → 元认知初始化 → CoT推理          │
+│  → LLM推理 → 工具执行(并行/顺序) → 错误恢复 → 上下文管理 → 反思     │
+│  ┌──────────┐ ┌───────────┐ ┌────────────────┐ ┌─────────────────┐ │
+│  │ CoT 推理 │ │ ETF 循环  │ │Token-aware     │ │ 并行工具执行    │ │
+│  │ 任务分解 │ │ 编辑-测试 │ │上下文管理      │ │ ThreadPool      │ │
+│  │ 动态温度 │ │ -修复     │ │优先级打分+压缩 │ │ 20只读工具并发  │ │
+│  └──────────┘ └───────────┘ └────────────────┘ └─────────────────┘ │
+│  ┌──────────────────┐ ┌────────────────┐ ┌──────────────────────┐  │
+│  │ 持久化 Shell     │ │ 自动项目索引   │ │ Auto Lint-Fix +      │  │
+│  │ env/cwd保持      │ │ 会话启动       │ │ Auto Commit          │  │
+│  │ 后台进程管理     │ │ repo_map注入   │ │ Auto Undo/Rollback   │  │
+│  └──────────────────┘ └────────────────┘ └──────────────────────┘  │
+├───────────┬───────────┬───────────┬────────────────────────────────┤
+│  Tools    │  Memory   │   RAG     │   Evolution + Metacognition    │
+│  (57个    │  (4层)    │  Engine   │                                │
+│  15模块)  │           │           │                                │
+├───────────┼───────────┼───────────┼────────────────────────────────┤
+│ file(9)   │ L1 working│ ChromaDB  │ 15维评分 · 策略进化            │
+│ command(4)│ L2 long   │  / JSON   │ 失败恢复引擎(8模式×3级)       │
+│ search(4) │ L3 persist│ 查询扩展  │ 自训练模拟器                   │
+│ git(8)    │ L4 外部   │ 代码分块  │ 经验合成·知识迁移              │
+│ test(2)   │           │           │ 6维认知雷达                    │
+│ quality(3)│ TF-IDF    │           │ 偏差检测·置信校准              │
+│ refactor  │ 跨层排序  │           │ 认知自适应                     │
+│ project   │ Jaccard   │           │ 工具探索顾问                   │
+│ ast(3)    │  去重     │           │ 恢复剧本构建                   │
+│ memory(3) │           │           │                                │
+│ rag/web   │           │           │                                │
+│ evolve(10)│           │           │                                │
+│ metacog(2)│           │           │                                │
+│benchmark3 │           │           │                                │
+└───────────┴───────────┴───────────┴────────────────────────────────┘
          ↕                  ↕               ↕
-    Ollama API          向量数据库      turing_data/
-  (Qwen3-Coder)       (ChromaDB)      (JSON/YAML)
+    LLM Router          向量数据库      turing_data/
+  (Multi-Provider)     (ChromaDB)      (JSON/YAML)
 ```
 
 ## 🚀 快速开始
@@ -156,6 +186,9 @@ You > 帮我写一个快速排序算法
 | `/strategies` | 列出已学会的策略模板 |
 | `/evolution` | 查看进化日志 |
 | `/index <路径>` | 索引项目到 RAG 知识库 |
+| `/compact` | 压缩上下文（保留关键信息，释放 token 空间） |
+| `/undo` | 撤销上一次文件修改（Git 级回滚） |
+| `/diff` | 查看当前会话中所有文件变更的 diff 预览 |
 | `/new` | 开始新会话 |
 | `/exit` | 退出 |
 
@@ -196,44 +229,75 @@ You > 帮我写一个快速排序算法
 3. **知识蒸馏** — 每 50 次任务触发一次，合并冗余反思，淘汰低质量条目
 4. **AI 工具学习** — 分析 Claude Opus / Codex / Gemini / Copilot 的策略并内化
 5. **策略预播种** — 基于顶尖 AI 工具知识库，冷启动即加载专家级任务策略（6 大任务类型）
-6. **十一维能力评分** — 代码质量 / 调试能力 / 架构设计 / 执行效率 / 安全意识 / 沟通清晰度 / 工具多样性 / 推理深度 / 记忆利用率 / 学习速率 / 验证覆盖率
+6. **十五维能力评分** — 代码质量 / 调试能力 / 架构设计 / 执行效率 / 安全意识 / 沟通清晰度 / 工具多样性 / 推理深度 / 记忆利用率 / 学习速率 / 验证覆盖率 / 错误恢复力 / 自主性 / 上下文管理 / 持续改进
 7. **工具效率分析** — 追踪每个工具的成功关联率，识别高效工具组合
 8. **决策质量追踪** — 评估工具选择质量和推理链深度
+9. **失败恢复引擎** — 8 种失败模式 × 3 级恢复策略，自动构建恢复剧本
+10. **自训练模拟器** — 生成合成任务并自我训练，持续提升弱项
+11. **元认知监控** — 6 维认知雷达（计划质量 / 工具效率 / 错误恢复 / 创造性 / 专注度 / 综合），偏差检测与置信校准
 
-## 🔧 工具一览（31+ 工具，13 个模块）
+## 🔧 工具一览（58 工具，15 个模块）
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
-| **文件操作** | `read_file` | 读取文件（支持行号范围） |
+| **文件操作 (9)** | `read_file` | 读取文件（支持行号范围） |
 | | `write_file` | 创建/覆盖文件（自动创建目录） |
-| | `edit_file` | 精确替换编辑（多匹配处理 + 近似提示） |
-| **命令执行** | `run_command` | 执行 Shell 命令（安全过滤 + 超时控制） |
-| **代码搜索** | `search_code` | 文本/正则搜索（ripgrep/grep） |
+| | `edit_file` | 精确替换编辑（diff 预览 + 多匹配处理 + 近似提示） |
+| | `generate_file` | AI 生成完整文件（保留已有内容确认） |
+| | `multi_edit` | 原子化多文件编辑（事务性，失败自动回滚） |
+| | `move_file` | 移动/重命名文件或目录 |
+| | `copy_file` | 复制文件或目录 |
+| | `delete_file` | 安全删除文件（非空目录保护） |
+| | `find_files` | 按名称/模式/内容搜索文件（glob + regex） |
+| **命令执行 (4)** | `run_command` | 持久化 Shell（env/cwd 跨调用保持 + 安全过滤） |
+| | `run_background` | 启动后台进程（服务器、watch 等） |
+| | `check_background` | 查看后台进程输出与状态 |
+| | `stop_background` | 终止后台进程 |
+| **代码搜索 (4)** | `search_code` | 文本/正则搜索（ripgrep/grep） |
 | | `list_directory` | 列出目录内容（递归 + 文件大小） |
-| **Git 操作** | `git_status` | 查看仓库状态 |
+| | `repo_map` | 代码仓库结构地图（模块 + 函数 + 类） |
+| | `smart_context` | 智能上下文收集（import 链 / 符号引用 / 错误堆栈解析） |
+| **Git 操作 (8)** | `git_status` | 查看仓库状态 |
 | | `git_diff` | 查看差异（工作区/暂存区/提交间） |
 | | `git_log` | 查看提交历史（支持过滤） |
 | | `git_blame` | 逐行归因 |
-| **测试运行** | `run_tests` | 自动检测并运行测试（pytest/jest/go test 等） |
+| | `git_add` | 暂存文件 |
+| | `git_commit` | 提交变更 |
+| | `git_branch` | 分支管理 |
+| | `git_stash` | 暂存/恢复工作区 |
+| **测试运行 (2)** | `run_tests` | 自动检测并运行测试（pytest/jest/go test + 覆盖率 + 失败详情） |
 | | `generate_tests` | 为源文件生成测试脚手架 |
-| **代码质量** | `lint_code` | 运行 Linter（Ruff/flake8/ESLint 等） |
+| **代码质量 (3)** | `lint_code` | 运行 Linter（Ruff/flake8/ESLint 等） |
 | | `format_code` | 运行代码格式化（Black/Prettier 等） |
 | | `type_check` | 运行类型检查（mypy/pyright/tsc） |
-| **批量重构** | `batch_edit` | 跨文件批量搜索替换（支持正则） |
+| **批量重构 (3)** | `batch_edit` | 跨文件批量搜索替换（支持正则） |
 | | `rename_symbol` | 安全重命名符号 |
 | | `impact_analysis` | 跨文件影响分析（修改前评估依赖影响） |
-| **项目分析** | `detect_project` | 自动检测项目类型、语言、框架 |
+| **项目分析 (2)** | `detect_project` | 自动检测项目类型、语言、框架 |
 | | `analyze_dependencies` | 解析依赖文件 |
-| **AST 代码分析** | `code_structure` | 提取文件/目录的类、函数、导入结构 |
+| **AST 代码分析 (3)** | `code_structure` | 提取文件/目录的类、函数、导入结构 |
 | | `call_graph` | 分析函数调用关系图和依赖链 |
 | | `complexity_report` | 圈复杂度分析报告（识别高复杂度函数） |
-| **记忆管理** | `memory_read` | 检索记忆（working/long_term/persistent） |
+| **记忆管理 (3)** | `memory_read` | 检索记忆（working/long_term/persistent） |
 | | `memory_write` | 写入记忆 |
 | | `memory_reflect` | 任务反思 |
-| **外部搜索** | `rag_search` | RAG 本地文档检索（查询扩展 + 代码分块） |
+| **外部搜索 (2)** | `rag_search` | RAG 本地文档检索（查询扩展 + 代码分块） |
 | | `web_search` | DuckDuckGo 搜索 |
-| **自我演化** | `learn_from_ai_tool` | 学习 AI 工具策略 |
+| **自我演化 (10)** | `learn_from_ai_tool` | 学习 AI 工具策略 |
 | | `gap_analysis` | 能力差距分析 + 改进路线图 |
+| | `evolve_strategies` | 批量策略进化 |
+| | `distill_knowledge` | 知识蒸馏（合并冗余、淘汰低质量） |
+| | `seed_strategies` | 策略预播种 |
+| | `explore_tools` | 工具探索与推荐 |
+| | `failure_recovery` | 失败恢复与剧本构建 |
+| | `self_training` | 自训练模拟器 |
+| | `build_playbook` | 恢复剧本构建 |
+| | `cross_task_transfer` | 跨任务知识迁移 |
+| **元认知 (2)** | `metacognition_checkpoint` | 认知检查点（6 维雷达扫描） |
+| | `metacognition_report` | 元认知综合报告 |
+| **基准评测 (3)** | `run_benchmark` | HumanEval 风格代码生成评测（pass@k） |
+| | `eval_code` | 多维度代码质量评估（语法 + lint + 复杂度 + 安全） |
+| | `benchmark_trend` | 历史评测分数趋势追踪 |
 
 ## 🌐 Web UI
 
@@ -324,6 +388,8 @@ security:
 | `rich` | 终端 UI 渲染 | ✅ 必须 |
 | `flask` | Web UI 后端 | ⚡ 推荐（Web 界面需要） |
 | `chromadb` | 向量数据库（长期记忆 + RAG） | ⚡ 推荐（无则降级为 JSON） |
+| `openai` | OpenAI / DeepSeek API 调用 | ⚡ 可选（云端模型需要） |
+| `anthropic` | Anthropic Claude API 调用 | ⚡ 可选（Claude 模型需要） |
 | `duckduckgo-search` | Web 搜索 | ⚡ 可选 |
 
 ## 🗺 演化路线图
@@ -336,10 +402,15 @@ security:
 | v0.4 | **可靠性 + 智能化 + 规模化**：edit_file 多匹配处理、自动重试、TF-IDF 记忆检索（中文 bigram）、跨层排序、RAG 查询扩展、代码分块、Jaccard 去重、元推理框架、六维评分、循环检测、Git/测试/质量/重构/项目分析 26 工具 | ✅ 已完成 |
 | v0.5 | **高级推理 + 策略预播种**：CoT 链式推理分层分解、智能工具路由、编辑-测试-修复（ETF）验证循环、动态温度调节、6 大任务类型策略预播种、语义错误分析与自动修正 | ✅ 已完成 |
 | v0.6 | **深度代码分析 + 并行执行**：AST 代码结构提取、函数调用关系图、圈复杂度报告、跨文件影响分析、并行工具执行（ThreadPoolExecutor）、优先级滑动窗口上下文管理、对话摘要折叠、十一维能力评分（31 工具） | ✅ 已完成 |
-| v0.7 | 基准评测（HumanEval / SWE-bench） | 📋 计划中 |
-| v0.8 | 多项目协作 + 团队知识共享 | 📋 计划中 |
-| v0.9 | 多模态支持（图片/图表理解） | 📋 计划中 |
-| v1.0 | 完整自进化循环 + 生产级稳定性 | 📋 计划中 |
+| v0.7 | **对标顶尖 + Git 完整工作流**：与 Aider/Cursor/Claude Code 差距分析、Git 完整工作流（add/commit/branch/stash）、Diff 预览、Repo Map、Auto Lint-Fix、上下文压缩（/compact）、一键撤销（/undo）（41 工具） | ✅ 已完成 |
+| v0.8 | **元认知系统**：MetacognitiveEngine（6 维认知雷达）、偏差检测、置信校准、认知自适应、经验合成器、跨任务知识迁移（46 工具） | ✅ 已完成 |
+| v0.9 | **失败恢复 + 自我训练**：失败恢复引擎（8 模式 × 3 级恢复策略）、自训练模拟器、恢复剧本构建、工具探索顾问（48 工具） | ✅ 已完成 |
+| v1.0 | **生产级完善**：持久化 Shell 会话（env/cwd 跨调用保持）、后台进程管理、文件管理（move/copy/delete/find）、原子化多文件编辑（multi_edit）、Token-aware 上下文管理、测试覆盖率 + 失败详情、自动项目索引（54 工具） | ✅ 已完成 |
+| v2.0 | **多模型 + 基准评测**：多 Provider LLM 路由（Ollama/OpenAI/Anthropic/DeepSeek）、按复杂度自动路由 + fallback、HumanEval 基准评测框架（12 题 + pass@k + 自修复）、业界分数对比、智能上下文收集（import 链 + 错误堆栈 + 符号引用）、多维代码质量评估（58 工具） | ✅ 已完成 |
+| v2.1 | MCP 协议集成（对标 Claude Code 工具扩展） | 📋 计划中 |
+| v2.2 | 沙箱隔离（Docker 容器化代码执行） | 📋 计划中 |
+| v2.3 | 多模态支持（图片/截图/UML 理解） | 📋 计划中 |
+| v2.4 | IDE 插件（VS Code Extension） | 📋 计划中 |
 
 ## 📄 License
 

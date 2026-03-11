@@ -1,12 +1,18 @@
 """Git 操作工具
 
-为 Turing 补齐 Git 集成能力，提供代码版本管理的基础操作：
+为 Turing 补齐 Git 集成能力，提供代码版本管理的完整操作：
+
+读操作（只读，可并行）:
 - git_status  — 查看工作区变更状态
 - git_diff    — 查看文件 diff（工作区或指定 commit 间）
 - git_log     — 查看提交历史
 - git_blame   — 查看文件逐行归属
 
-这些工具是 Claude Opus / Copilot 等顶尖编码智能体的标配能力。
+写操作（副作用，顺序执行）:
+- git_commit  — 暂存并提交（对标 Aider 的自动提交流）
+- git_branch  — 分支管理：创建 / 切换 / 列出分支
+- git_stash   — 暂存管理：暂存 / 弹出 / 列出暂存
+- git_reset   — 撤销操作：回退最近 N 次提交（对标 Aider /undo）
 """
 
 from __future__ import annotations
@@ -55,6 +61,7 @@ def _run_git(args: list[str], cwd: str | None = None, timeout: int = 15) -> dict
     },
 )
 def git_status(path: str = ".") -> dict:
+    """查看 Git 仓库状态（分支、修改、暂存、未追踪文件）。"""
     return _run_git(["status", "--short", "--branch"], cwd=path)
 
 
@@ -90,6 +97,7 @@ def git_diff(
     staged: bool = False,
     commit: str = None,
 ) -> dict:
+    """查看差异：工作区/暂存区/提交间对比。"""
     args = ["diff"]
     if staged:
         args.append("--cached")
@@ -133,6 +141,7 @@ def git_log(
     file: str = None,
     oneline: bool = True,
 ) -> dict:
+    """查看提交历史（支持文件过滤和精简模式）。"""
     args = ["log", f"-{count}"]
     if oneline:
         args.append("--oneline")
@@ -163,6 +172,7 @@ def git_log(
     },
 )
 def git_blame(file: str, start_line: int = None, end_line: int = None) -> dict:
+    """逐行归因：查看每行代码的作者和提交信息。"""
     args = ["blame", "--line-porcelain"]
     if start_line and end_line:
         args.extend([f"-L{start_line},{end_line}"])
@@ -195,3 +205,187 @@ def git_blame(file: str, start_line: int = None, end_line: int = None) -> dict:
     if simplified:
         return {"blame": simplified[:100], "count": len(simplified)}
     return result
+
+
+# ===== Git 写操作 =====
+
+
+@tool(
+    name="git_commit",
+    description="暂存并提交变更（类似 Aider 自动提交）。默认暂存所有变更文件。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "提交信息"},
+            "files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "要暂存的文件列表（默认为空=暂存全部变更）",
+            },
+            "path": {
+                "type": "string",
+                "description": "仓库路径（可选，默认当前目录）",
+            },
+        },
+        "required": ["message"],
+    },
+)
+def git_commit(message: str, files: list = None, path: str = ".") -> dict:
+    """提交变更（可指定文件或全部暂存）。"""
+    # 先暂存
+    if files:
+        for f in files:
+            r = _run_git(["add", "--", f], cwd=path)
+            if r.get("exit_code", 1) != 0 and "error" in r:
+                return {"error": f"暂存 {f} 失败: {r.get('output', r.get('error', ''))}"}
+    else:
+        r = _run_git(["add", "-A"], cwd=path)
+        if r.get("exit_code", 1) != 0:
+            return {"error": f"暂存失败: {r.get('output', r.get('error', ''))}"}
+
+    # 检查是否有变更
+    status = _run_git(["diff", "--cached", "--stat"], cwd=path)
+    if not status.get("output", "").strip():
+        return {"status": "no_changes", "message": "没有可提交的变更"}
+
+    # 提交
+    result = _run_git(["commit", "-m", message], cwd=path)
+    if result.get("exit_code", 1) != 0:
+        return {"error": f"提交失败: {result.get('output', result.get('error', ''))}"}
+
+    # 获取提交信息
+    log = _run_git(["log", "-1", "--oneline"], cwd=path)
+    return {
+        "status": "ok",
+        "commit": log.get("output", "").strip(),
+        "message": message,
+        "files_staged": len(files) if files else "all",
+    }
+
+
+@tool(
+    name="git_branch",
+    description="分支管理：创建新分支、切换分支、或列出分支。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "操作: create, switch, list（默认 list）",
+                "enum": ["create", "switch", "list"],
+            },
+            "name": {
+                "type": "string",
+                "description": "分支名（create/switch 时必填）",
+            },
+            "path": {
+                "type": "string",
+                "description": "仓库路径（可选）",
+            },
+        },
+        "required": [],
+    },
+)
+def git_branch(action: str = "list", name: str = None, path: str = ".") -> dict:
+    """分支管理：list/create/switch/delete。"""
+    if action == "list":
+        result = _run_git(["branch", "-a"], cwd=path)
+        return result
+
+    if not name:
+        return {"error": "分支名（name）是必填的"}
+
+    if action == "create":
+        result = _run_git(["checkout", "-b", name], cwd=path)
+    elif action == "switch":
+        result = _run_git(["checkout", name], cwd=path)
+    else:
+        return {"error": f"不支持的操作: {action}"}
+
+    if result.get("exit_code", 1) != 0:
+        return {"error": result.get("output", result.get("error", ""))}
+    return {"status": "ok", "action": action, "branch": name}
+
+
+@tool(
+    name="git_stash",
+    description="暂存管理：保存当前未提交的变更到暂存栈、弹出暂存、或列出暂存列表。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "操作: save, pop, list（默认 list）",
+                "enum": ["save", "pop", "list"],
+            },
+            "message": {
+                "type": "string",
+                "description": "暂存描述信息（save 时可选）",
+            },
+            "path": {
+                "type": "string",
+                "description": "仓库路径（可选）",
+            },
+        },
+        "required": [],
+    },
+)
+def git_stash(action: str = "list", message: str = None, path: str = ".") -> dict:
+    """暂存/恢复工作区变更。"""
+    if action == "save":
+        args = ["stash", "push"]
+        if message:
+            args.extend(["-m", message])
+        result = _run_git(args, cwd=path)
+    elif action == "pop":
+        result = _run_git(["stash", "pop"], cwd=path)
+    elif action == "list":
+        result = _run_git(["stash", "list"], cwd=path)
+    else:
+        return {"error": f"不支持的操作: {action}"}
+
+    if result.get("exit_code", 1) != 0 and "error" in result:
+        return result
+    return {"status": "ok", "action": action, "output": result.get("output", "")}
+
+
+@tool(
+    name="git_reset",
+    description="撤销最近的提交（软回退，保留文件变更）。对标 Aider 的 /undo 功能。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "count": {
+                "type": "integer",
+                "description": "回退几个提交（默认 1）",
+            },
+            "hard": {
+                "type": "boolean",
+                "description": "是否硬回退（丢弃变更，默认 false=软回退保留文件变更）",
+            },
+            "path": {
+                "type": "string",
+                "description": "仓库路径（可选）",
+            },
+        },
+        "required": [],
+    },
+)
+def git_reset(count: int = 1, hard: bool = False, path: str = ".") -> dict:
+    """回退提交（支持 soft/hard 模式）。"""
+    # 先记录当前 HEAD 用于报告
+    before = _run_git(["log", "-1", "--oneline"], cwd=path)
+
+    mode = "--hard" if hard else "--soft"
+    result = _run_git(["reset", mode, f"HEAD~{count}"], cwd=path)
+    if result.get("exit_code", 1) != 0:
+        return {"error": result.get("output", result.get("error", ""))}
+
+    after = _run_git(["log", "-1", "--oneline"], cwd=path)
+    return {
+        "status": "ok",
+        "mode": "hard" if hard else "soft",
+        "rolled_back": count,
+        "before": before.get("output", "").strip(),
+        "now_at": after.get("output", "").strip(),
+    }

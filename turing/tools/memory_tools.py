@@ -18,11 +18,13 @@ _memory_manager = None
 
 
 def set_memory_manager(mm):
+    """注入全局 MemoryManager 实例（Agent 启动时调用）。"""
     global _memory_manager
     _memory_manager = mm
 
 
 def _get_mm():
+    """获取全局 MemoryManager 实例。"""
     if _memory_manager is None:
         return None
     return _memory_manager
@@ -49,6 +51,7 @@ def _get_mm():
     },
 )
 def memory_read(layer: str, query: str, top_k: int = 5) -> dict:
+    """从指定层检索记忆。"""
     mm = _get_mm()
     if mm is None:
         return {"error": "记忆系统未初始化"}
@@ -78,6 +81,7 @@ def memory_read(layer: str, query: str, top_k: int = 5) -> dict:
     },
 )
 def memory_write(layer: str, content: str, tags: list[str] = None) -> dict:
+    """向指定层写入记忆。"""
     mm = _get_mm()
     if mm is None:
         return {"error": "记忆系统未初始化"}
@@ -102,6 +106,7 @@ def memory_write(layer: str, content: str, tags: list[str] = None) -> dict:
     },
 )
 def memory_reflect(task_summary: str, outcome: str, lessons: str) -> dict:
+    """触发任务反思，归纳经验并存入长期记忆。"""
     mm = _get_mm()
     if mm is None:
         return {"error": "记忆系统未初始化"}

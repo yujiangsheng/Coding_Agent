@@ -1,14 +1,18 @@
-"""测试执行工具
+"""测试执行工具（v2.0 — 增强测试分析）
 
-为 Turing 补齐自动化测试能力（对标 Claude Opus / Gemini 的测试驱动开发）：
-- run_tests       — 自动检测并运行项目测试（pytest/unittest/jest/go test 等）
+为 Turing 补齐自动化测试能力（对标 Claude Code / Cursor 的测试驱动开发）：
+- run_tests       — 自动检测并运行项目测试，支持覆盖率和失败细节提取（v2.0 增强）
 - generate_tests  — 为指定函数/文件生成测试用例框架
 
-这是 Claude Opus 等顶尖工具的核心优势之一：修改代码后主动验证。
+v2.0 增强：
+- **覆盖率支持**：pytest 自动加 --cov，返回覆盖率百分比
+- **失败细节提取**：从输出中解析失败测试名、断言消息、堆栈跟踪
+- **结构化结果**：返回 failures_detail 列表，每项含测试名和失败原因
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -73,7 +77,7 @@ def _detect_test_framework(path: str = ".") -> dict:
 
 @tool(
     name="run_tests",
-    description="自动检测项目的测试框架并运行测试。支持 pytest、unittest、jest、vitest、go test、cargo test 等。可指定具体测试文件或测试名运行部分测试。",
+    description="自动检测项目的测试框架并运行测试。支持 pytest、unittest、jest、vitest、go test、cargo test 等。可指定具体测试文件或测试名运行部分测试。支持覆盖率报告（pytest --cov）。",
     parameters={
         "type": "object",
         "properties": {
@@ -93,6 +97,10 @@ def _detect_test_framework(path: str = ".") -> dict:
                 "type": "boolean",
                 "description": "是否显示详细输出（默认 true）",
             },
+            "coverage": {
+                "type": "boolean",
+                "description": "是否启用覆盖率报告（默认 false，仅 pytest 支持）",
+            },
         },
         "required": [],
     },
@@ -102,7 +110,9 @@ def run_tests(
     test_file: str = None,
     test_name: str = None,
     verbose: bool = True,
+    coverage: bool = False,
 ) -> dict:
+    """自动检测测试框架并运行测试，支持覆盖率报告和失败详情提取。"""
     info = _detect_test_framework(path)
     framework = info["framework"]
     base_cmd = info["command"]
@@ -115,6 +125,8 @@ def run_tests(
     if framework == "pytest":
         if verbose:
             cmd += " -v"
+        if coverage:
+            cmd += " --cov --cov-report=term-missing"
         if test_file:
             cmd += f" {test_file}"
             if test_name:
@@ -132,9 +144,13 @@ def run_tests(
             cmd += f" {test_file}"
         if test_name:
             cmd += f" -t '{test_name}'"
+        if coverage and framework == "jest":
+            cmd += " --coverage"
     elif framework == "go-test":
         if verbose:
             cmd += " -v"
+        if coverage:
+            cmd += " -cover"
         if test_file:
             cmd = f"go test -run {test_name or '.'} {test_file}"
     elif framework == "cargo-test":
@@ -157,11 +173,15 @@ def run_tests(
         if len(output) > 50000:
             output = output[:25000] + "\n...(截断)...\n" + output[-25000:]
 
-        # 分析测试结果
+        # ── 分析测试结果 ──
         passed = failed = errors = 0
+        failures_detail = []
+        coverage_pct = None
+
         if framework == "pytest":
+            # 解析 passed/failed 计数
             for line in output.split("\n"):
-                if " passed" in line and ("failed" in line or "error" in line or line.strip().startswith("=")):
+                if " passed" in line and line.strip().startswith("="):
                     parts = line.split()
                     for i, p in enumerate(parts):
                         if p == "passed" and i > 0:
@@ -174,15 +194,54 @@ def run_tests(
                             try: errors = int(parts[i-1])
                             except ValueError: pass
 
-        return {
+            # 提取失败测试的详细信息
+            failure_blocks = re.findall(
+                r'_{3,}\s+([\w:.\[\]]+)\s+_{3,}\n(.*?)(?=\n_{3,}|\n={3,})',
+                output, re.DOTALL
+            )
+            for test_id, block in failure_blocks:
+                # 提取 AssertionError / 最后一行错误
+                assertion = ""
+                for bl in block.strip().split("\n"):
+                    bl_stripped = bl.strip()
+                    if bl_stripped.startswith(("AssertionError", "assert ", "E ", "> ")):
+                        assertion = bl_stripped
+                    elif "Error" in bl_stripped or "Exception" in bl_stripped:
+                        assertion = bl_stripped
+                failures_detail.append({
+                    "test": test_id.strip(),
+                    "reason": assertion[:200] if assertion else block.strip()[-200:],
+                })
+
+            # 提取覆盖率（TOTAL 行的百分比）
+            cov_match = re.search(r'TOTAL\s+\d+\s+\d+\s+(\d+)%', output)
+            if cov_match:
+                coverage_pct = int(cov_match.group(1))
+
+        elif framework in ("jest", "vitest"):
+            # Jest/Vitest 解析
+            pass_m = re.search(r'Tests:\s+(\d+)\s+passed', output)
+            fail_m = re.search(r'Tests:\s+(\d+)\s+failed', output)
+            if pass_m: passed = int(pass_m.group(1))
+            if fail_m: failed = int(fail_m.group(1))
+
+        test_result = {
             "framework": framework,
+            "command": cmd,
             "exit_code": result.returncode,
-            "passed": passed if passed else ("unknown" if result.returncode == 0 else 0),
+            "passed": passed if passed else ("all" if result.returncode == 0 else 0),
             "failed": failed if failed else (0 if result.returncode == 0 else "unknown"),
             "errors": errors,
             "success": result.returncode == 0,
             "output": output.strip(),
         }
+
+        if failures_detail:
+            test_result["failures_detail"] = failures_detail[:20]
+        if coverage_pct is not None:
+            test_result["coverage_percent"] = coverage_pct
+
+        return test_result
     except subprocess.TimeoutExpired:
         return {"error": "测试运行超时（>120s）", "framework": framework}
     except Exception as e:
@@ -216,6 +275,7 @@ def generate_tests(
     output_file: str = None,
     functions: str = None,
 ) -> dict:
+    """为源文件生成测试脚手架。"""
     p = Path(source_file)
     if not p.exists():
         return {"error": f"源文件不存在: {source_file}"}

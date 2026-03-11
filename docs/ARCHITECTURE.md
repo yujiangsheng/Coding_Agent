@@ -1,110 +1,151 @@
 # 系统架构设计文档
 
-> Turing v0.6.0 — 自进化编程智能体
+> Turing v2.0 — 自进化编程智能体
 
 ## 1. 总体架构
 
 Turing 采用分层架构设计，每层职责清晰、松耦合：
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                   接入层 (Interface)                   │
-│    main.py (CLI REPL)    web/server.py (Flask SSE)   │
-├──────────────────────────────────────────────────────┤
-│                   核心层 (Core)                        │
-│                 agent.py — TuringAgent                │
-│    ReAct Loop · CoT 推理 · ETF 验证 · 并行执行       │
-├──────┬──────────┬──────────┬─────────────────────────┤
-│ 工具 │   记忆   │   RAG    │        演化              │
-│ 引擎 │   系统   │   引擎   │        系统              │
-├──────┼──────────┼──────────┼─────────────────────────┤
-│ 13个 │  4 层    │ ChromaDB │  反思/策略/蒸馏          │
-│ 模块 │  TF-IDF  │  + JSON  │  AI学习/11维评分        │
-│ 31+  │  跨层    │  查询    │  策略预播种              │
-│ 工具 │  排序    │  扩展    │  工具效率分析            │
-└──────┴──────────┴──────────┴─────────────────────────┘
-         ↕              ↕              ↕
-     Ollama API     向量数据库     turing_data/
-   (Qwen3-Coder)   (ChromaDB)     (JSON/YAML)
+┌──────────────────────────────────────────────────────────────────────┐
+│                       接入层 (Interface)                              │
+│       main.py (CLI REPL)           web/server.py (Flask SSE)        │
+├──────────────────────────────────────────────────────────────────────┤
+│                       核心层 (Core)                                  │
+│                    agent.py — TuringAgent                            │
+│  10 阶段执行流水线 · CoT 推理 · ETF 验证 · 元认知 · 并行执行       │
+│  持久化 Shell · Token-aware 上下文管理 · 自动项目索引               │
+├──────────┬───────────┬───────────┬───────────────────────────────────┤
+│  工具引擎 │   记忆系统 │   RAG 引擎│   演化系统 + 元认知引擎          │
+├──────────┼───────────┼───────────┼───────────────────────────────────┤
+│  15 模块  │   4 层     │  ChromaDB │  15 维评分 · 策略进化 · 失败恢复 │
+│  58 工具  │   TF-IDF   │  + JSON   │  自训练模拟器 · 6 维认知雷达     │
+│  21 并行  │   跨层排序 │  查询扩展 │  经验合成 · 知识迁移             │
+└──────────┴───────────┴───────────┴─────────────────────────────────┘
+         ↕                  ↕               ↕
+     LLM Router          向量数据库      turing_data/
+   (Multi-Provider)     (ChromaDB)      (JSON/YAML)
 ```
 
 ## 2. 核心组件
 
 ### 2.1 TuringAgent（`agent.py`）
 
-Agent 主循环，是整个系统的调度中枢。
+Agent 主循环，是整个系统的调度中枢。v2.0 实现了完整的 10 阶段执行流水线，并新增多 Provider LLM 路由。
 
-**执行流程：**
+**执行流程（10 阶段）：**
 
 ```
 用户输入
   │
   ├─[0] 记忆预加载 ── 从 L2+L3 检索 top_k=5 条相关记忆
-  ├─[0.5] 策略注入 ── 关键词匹配任务类型 → 加载策略模板
-  ├─[0.8] CoT 推理 ── 复杂度评估 → LLM 分层分解（简单任务跳过）
+  ├─[1] 策略注入 ── 关键词匹配任务类型 → 加载策略模板 + 推荐工具
+  ├─[2] 工具推荐 ── 基于策略模板向 LLM 推荐最佳工具组合
+  ├─[3] 元认知初始化 ── MetacognitiveEngine 启动 6 维认知雷达
+  ├─[4] CoT 推理 ── 复杂度评估 → LLM 分层分解（简单任务跳过）
   │
-  ├─[主循环] ReAct Loop（最多 max_iterations=20 轮）
+  ├─[5. 主循环] ReAct Loop（最多 max_iterations=20 轮）
   │    ├── LLM 推理生成（支持流式/非流式）
-  │    ├── 动态温度调节（按 planning/execution/debugging 阶段）
-  │    ├── 工具调用分类 → 只读并行 / 副作用顺序
+  │    ├── 动态温度调节（planning=0.6 / execution=0.3 / debugging=0.45）
+  │    ├── 工具调用分类 → 只读并行(20工具) / 副作用顺序
   │    ├── 循环检测（连续 3 次相同签名 → 中断）
   │    ├── 语义错误分析（连续失败 → 模式识别 → 智能修正）
   │    ├── ETF 提示注入（编辑操作后提醒验证）
-  │    └── 上下文溢出管理（优先级滑动窗口）
+  │    └── Token-aware 上下文溢出管理
   │
-  ├─[反思] LLM 深度反思 → 经验写入 L2
-  ├─[进化] 策略进化检查 → 知识蒸馏检查
-  └─[评分] 十一维能力评分更新
+  ├─[6] 错误恢复 ── 失败恢复引擎（8 模式 × 3 级策略）
+  ├─[7] 上下文管理 ── Token-aware 优先级打分 + 智能压缩
+  ├─[8] 反思 ── LLM 深度反思 → 经验写入 L2 → 策略进化检查
+  └─[9] 评分 ── 十五维能力评分更新 + 元认知报告
 ```
 
 **关键设计决策：**
 
-- **Generator 事件流**：`chat()` 返回 Generator，yield 类型化事件字典，支持 CLI/Web 统一消费
-- **动态温度**：规划阶段 0.6（更发散）、执行阶段 0.3（更精确）、调试阶段 0.45（平衡）
-- **自动修正**：文件路径错误时自动 `find` 搜索、`edit_file` 匹配失败时规范化空白
+| 决策 | 实现 | 原因 |
+|------|------|------|
+| Generator 事件流 | `chat()` 返回 Generator，yield 类型化事件字典 | CLI/Web 统一消费模型 |
+| 动态温度 | planning=0.6 / execution=0.3 / debugging=0.45 | 不同阶段需要不同的发散/精确度 |
+| 自动修正 | 路径错误→`find`搜索，edit_file→规范化空白 | 减少无效重试 |
+| 持久化 Shell | `_ShellSession` 单例，env/cwd 跨调用保持 | 对标 Claude Code，支持复杂构建场景 |
+| Token-aware | 基于 `model.context_length` 估算 token，分优先级压缩 | 比固定字符阈值更精准 |
+| 自动项目索引 | 会话启动时自动 `detect_project` + `repo_map` | 冷启动即有项目上下文 |
+| 多 Provider 路由 | `ModelRouter` 按复杂度路由 + 自动 fallback | 对标 Codex，支持 4 家 LLM Provider |
 
 ### 2.2 工具系统（`tools/`）
 
 **注册机制：**
 
 ```python
-@tool(name="...", description="...", parameters={...})
+from turing.tools.registry import tool
+
+@tool(name="my_tool", description="工具描述", parameters={
+    "arg1": {"type": "string", "description": "参数说明"}
+})
 def my_tool(arg1: str) -> dict:
+    """工具实现，统一返回 dict。"""
     return {"result": "..."}
 ```
 
-- 基于装饰器的自动注册，import 即生效
+- 基于 `@tool` 装饰器自动注册（import 即生效）
 - 统一返回 `dict` 类型（成功字段 + error 字段）
-- 自动生成 Ollama function calling schema
+- 自动生成 Ollama function calling schema（`get_ollama_tool_schemas()`）
+- `execute_tool()` 通过 `inspect.signature()` 自动过滤多余参数
 
-**13 个工具模块：**
+**15 个工具模块（58 工具）：**
 
 | 模块 | 工具数 | 说明 |
 |------|--------|------|
-| `file_tools.py` | 3 | 文件读写编辑（edit_file 支持多匹配 + 近似提示） |
-| `command_tools.py` | 1 | Shell 命令执行（黑名单过滤 + 超时控制） |
-| `search_tools.py` | 2 | 代码搜索 + 目录列表（ripgrep/grep 自适应） |
-| `git_tools.py` | 4 | Git status/diff/log/blame |
-| `test_tools.py` | 2 | 测试运行 + 测试生成（自动检测框架） |
+| `file_tools.py` | 9 | 文件 CRUD + diff 预览 + 原子化多文件编辑 + 文件管理 |
+| `command_tools.py` | 4 | 持久化 Shell（env/cwd 保持）+ 后台进程管理 |
+| `search_tools.py` | 4 | 代码搜索 + 目录列表 + Repo Map + 智能上下文收集 |
+| `git_tools.py` | 8 | 完整 Git 工作流（status/diff/log/blame/add/commit/branch/stash） |
+| `test_tools.py` | 2 | 测试运行（覆盖率 + 失败详情提取）+ 测试生成 |
 | `quality_tools.py` | 3 | Lint + Format + TypeCheck（多工具自适应） |
 | `refactor_tools.py` | 3 | 批量编辑 + 符号重命名 + 影响分析 |
 | `project_tools.py` | 2 | 项目检测 + 依赖分析 |
 | `ast_tools.py` | 3 | 代码结构 + 调用图 + 复杂度（Python AST） |
 | `memory_tools.py` | 3 | 记忆读写 + 反思 |
 | `external_tools.py` | 2 | RAG 检索 + Web 搜索 |
-| `evolution_tools.py` | 2 | AI 工具学习 + 差距分析 |
+| `evolution_tools.py` | 10 | 策略进化 + 蒸馏 + AI学习 + 失败恢复 + 自训练 + 探索 |
+| `benchmark_tools.py` | 3 | HumanEval 评测 + 代码质量评估 + 评测趋势 |
 | `registry.py` | — | 注册表 + Schema 生成 + 安全调度 |
 
 **并行执行策略：**
 
-只读工具集合（17 个）可安全并行执行：
+21 个只读工具可通过 `ThreadPoolExecutor` 安全并行执行：
+```python
+_READONLY_TOOLS = {
+    "read_file", "search_code", "list_directory", "repo_map",
+    "memory_read", "rag_search", "web_search",
+    "git_status", "git_diff", "git_log", "git_blame",
+    "detect_project", "analyze_dependencies",
+    "impact_analysis", "code_structure", "call_graph",
+    "complexity_report", "gap_analysis", "find_files",
+    "check_background", "smart_context",
+}
 ```
-read_file, search_code, list_directory, memory_read,
-rag_search, web_search, git_status, git_diff, git_log,
-git_blame, detect_project, analyze_dependencies,
-impact_analysis, code_structure, call_graph,
-complexity_report, gap_analysis
-```
+
+**v2.0 新增工具亮点：**
+
+| 工具 | 特性 |
+|------|------|
+| `smart_context` | 智能上下文收集（import 链追踪 / 符号引用 / 错误堆栈解析） |
+| `run_benchmark` | HumanEval 风格基准评测，pass@k 指标 + 业界分数横向对比 |
+| `eval_code` | 多维代码质量评估（语法 + lint + 圈复杂度 + 安全模式） |
+| `benchmark_trend` | 历史评测分数趋势追踪，量化能力进化 |
+
+**v1.0.0 新增工具亮点：**
+
+| 工具 | 特性 |
+|------|------|
+| `multi_edit` | 原子化多文件编辑，任意一步失败自动回滚全部变更 |
+| `run_command` | 持久化 Shell 会话，env/cwd 跨调用保持（`_ShellSession` 单例） |
+| `run_background` | 启动后台进程（服务器、watch 等），返回 PID |
+| `check_background` / `stop_background` | 查看/终止后台进程 |
+| `move_file` / `copy_file` / `delete_file` | 完整文件管理，非空目录删除保护 |
+| `find_files` | 混合搜索（glob 模式 + 正则内容匹配） |
+| `generate_file` | AI 生成完整文件，已有文件需确认 |
+| `run_tests` | 新增覆盖率报告（`--cov`）+ 正则提取失败详情 |
 
 ### 2.3 记忆系统（`memory/`）
 
@@ -154,24 +195,93 @@ L4 外部记忆 (RAG + Web)
 4. 跨层排序 + Jaccard 去重（similarity ≥ 0.85 → 合并）
 ```
 
-**上下文管理（滑动窗口）：**
+**Token-aware 上下文管理（v1.0.0 新增）：**
 
-当总上下文超过 80K 字符时，按优先级分四层压缩：
-1. 大工具结果 → 保留关键行（error/success/status）
-2. 早期 system 提示 → 只保留最近 2 条
-3. 早期对话 → 折叠为摘要
-4. 极端情况 → 只保留最近 14 条消息
+取代旧版 80K 字符固定阈值，基于 `model.context_length` 配置动态估算 token 数：
 
-### 2.4 RAG 引擎（`rag/engine.py`）
+```
+当前 token 估算 = len(messages_json) / 4
+上下文上限 = config.get("model.context_length", 32768) × 0.85
+
+溢出时按优先级打分压缩：
+ 优先级分 = base_score × recency_weight × type_weight
+ ├── system/plan 消息:   base=10 (最高保护)
+ ├── 最近 4 轮对话:      base=8
+ ├── 含工具结果的助理:    base=6
+ ├── 普通对话:           base=4
+ └── 早期历史:           base=2 (最先压缩)
+
+压缩策略：按优先级从低到高移除，直到 token 恢复安全线
+```
+
+### 2.4 LLM 路由层（`llm/`）
+
+v2.0 新增多 Provider LLM 路由，支持按任务复杂度自动选择最优模型：
+
+```
+ModelRouter
+├── _select_provider(task_complexity)
+│   ├── simple (< 0.3) → 快速轻量模型 (Ollama / GPT-4o-mini)
+│   ├── medium (0.3-0.7) → 主力模型 (GPT-4o / Claude Sonnet)
+│   └── complex (> 0.7) → 最强模型 (Claude Opus / o3)
+│
+├── chat() / stream_chat()
+│   └── 主模型调用 → 失败 → fallback 到下一个 Provider
+│
+├── 4 个 Provider 实现
+│   ├── OllamaProvider   — 本地模型，ollama.chat() 接口
+│   ├── OpenAIProvider    — GPT-4o / o3，流式 tool_call 累积
+│   ├── AnthropicProvider — Claude Opus/Sonnet，消息角色交替处理
+│   └── DeepSeekProvider  — DeepSeek-V3，扩展 OpenAI 接口
+│
+└── 初始化模式
+    ├── 配置文件 llm.providers 块（最精确）
+    ├── 环境变量自动检测（零配置）
+    └── 纯 Ollama 降级（默认）
+```
+
+### 2.5 基准评测框架（`benchmark/`）
+
+v2.0 新增 HumanEval 风格基准评测，量化代码生成能力：
+
+```
+BenchmarkRunner
+├── run_humaneval(num_tasks, k)
+│   ├── 从 BenchmarkDataset 加载评测题（12 道内置）
+│   ├── _run_single_humaneval(task)
+│   │   ├── LLM 生成代码 → _extract_code() 清理
+│   │   ├── CodeEvaluator.check_execution() 执行测试
+│   │   └── 失败 → _self_repair() → 再次检测
+│   ├── BenchmarkScorer.pass_at_k() 计算得分
+│   └── _compare_with_benchmarks() 对标业界
+│
+├── CodeEvaluator
+│   ├── check_execution() — 沙箱化测试执行
+│   └── check_quality() — 语法 + lint + 复杂度 + 安全
+│
+├── 12 道内置评测题
+│   ├── Easy: two_sum, LCP, valid_parentheses, flatten_nested
+│   ├── Medium: LRU_cache, group_anagrams, LIS, course_schedule, merge_k_sorted
+│   └── Hard: median_sorted_arrays, tree_serialization, calculator
+│
+└── 业界对比基准
+    ├── Claude Opus 4: 92.5%
+    ├── GPT-4o: 90.5%
+    ├── Claude Sonnet 4: 89.5%
+    ├── DeepSeek-V3: 88%
+    └── Qwen3-Coder-30B: 72%
+```
+
+### 2.6 RAG 引擎（`rag/engine.py`）
 
 - **查询扩展**：自动展开同义词和相关关键词
 - **代码感知分块**：按函数/类边界分块（而非固定长度），保持语义完整性
 - **双存储后端**：优先 ChromaDB 向量库，无则降级为 JSON TF-IDF
 - **索引 API**：`/index <路径>` 可索引本地项目到 RAG 知识库
 
-### 2.5 演化系统（`evolution/tracker.py`）
+### 2.7 演化系统（`evolution/tracker.py`）
 
-自我演化是 Turing 的核心差异化能力：
+自我演化是 Turing 的核心差异化能力。v2.0 新增了基准评测框架量化进化进度。
 
 ```
 任务完成
@@ -194,11 +304,46 @@ L4 外部记忆 (RAG + Web)
   ↓
 [知识蒸馏] ── 每 50 次任务 → 合并冗余、淘汰低质量
   ↓
-[十一维评分] → 综合能力画像
-  ├── ① 代码质量      ② 调试能力     ③ 架构设计
-  ├── ④ 执行效率      ⑤ 安全意识     ⑥ 沟通清晰度
-  ├── ⑦ 工具多样性    ⑧ 推理深度     ⑨ 记忆利用率
-  └── ⑩ 学习速率      ⑪ 验证覆盖率
+[失败恢复引擎] ── 8 种失败模式 × 3 级恢复策略
+  ├── 模式：syntax_error / runtime_error / test_failure / timeout
+  ├── 模式：resource_error / dependency_error / logic_error / unknown
+  ├── 级别：immediate (快速修复) / deep (根因分析) / alternative (换方案)
+  └── 自动构建恢复剧本（Playbook）
+  ↓
+[自训练模拟器] ── 合成任务训练弱项维度
+  ↓
+[十五维评分] → 综合能力画像
+  ├── ① 代码质量      ② 调试能力       ③ 架构设计
+  ├── ④ 执行效率      ⑤ 安全意识       ⑥ 沟通清晰度
+  ├── ⑦ 工具多样性    ⑧ 推理深度       ⑨ 记忆利用率
+  ├── ⑩ 学习速率      ⑪ 验证覆盖率     ⑫ 错误恢复力
+  └── ⑬ 自主性        ⑭ 上下文管理     ⑮ 持续改进
+```
+
+### 2.8 元认知引擎（`evolution/metacognition.py`）
+
+v0.8 新增的元认知系统，提供 6 维认知自我监控：
+
+```
+MetacognitiveEngine
+├── 6 维认知雷达
+│   ├── planning_quality     — 计划质量（结构化/完整性）
+│   ├── tool_efficiency      — 工具效率（成功率/选择质量）
+│   ├── error_recovery       — 错误恢复（恢复速度/策略有效性）
+│   ├── creativity           — 创造性（方案多样性/创新度）
+│   ├── focus                — 专注度（任务相关性/偏离检测）
+│   └── overall              — 综合评分
+│
+├── 认知检查点 (checkpoint)
+│   └── 在执行关键节点扫描 6 维雷达，检测认知偏差
+│
+├── 偏差检测 (bias detection)
+│   ├── 确认偏差 — 是否只寻找支持假设的证据
+│   ├── 锚定偏差 — 是否被初始信息过度影响
+│   └── 可用性偏差 — 是否偏向最近使用的工具/方法
+│
+└── 置信校准 (confidence calibration)
+    └── 评估自身判断的准确度，避免过度自信或不足
 ```
 
 **策略预播种（6 大任务类型）：**
@@ -209,7 +354,7 @@ L4 外部记忆 (RAG + Web)
 3. `refactor` — 结构分析 → 影响评估 → 批量修改 → 回归测试
 4. `debug` — 深度推理，分析堆栈，逐步排查
 5. `explain` — 结构提取 → 调用图 → 知识检索
-6. `test` — 框架检测 → 生成测试 → 运行验证
+6. `general` — 通用策略，适应性推理
 
 ## 3. 数据流
 
@@ -218,31 +363,25 @@ L4 外部记忆 (RAG + Web)
 ```
 用户输入 "修复 auth.py 的 bug"
   │
-  ├── MemoryManager.retrieve("修复 auth bug", ["long_term", "persistent"])
+  ├── [0] MemoryManager.retrieve(query, ["long_term", "persistent"])
   │   └── 返回: [历史 bug_fix 经验, auth 模块知识]
   │
-  ├── _load_relevant_strategy("修复 auth.py 的 bug")
-  │   └── 关键词匹配 "修复/bug" → 加载 bug_fix 策略模板
+  ├── [1] _load_relevant_strategy(query)
+  │   └── 关键词匹配 "修复/bug" → 加载 bug_fix 策略模板 + 推荐工具
   │
-  ├── _assess_and_plan("修复 auth.py 的 bug")
+  ├── [3] MetacognitiveEngine.start_task()
+  │   └── 初始化 6 维认知雷达基线
+  │
+  ├── [4] _assess_and_plan(query)
   │   └── 中等复杂度 → 快速计划
   │
-  ├── Ollama.chat() → 模型决定调用 read_file
-  │   ├── _classify_tool_calls → [read_file] → 只读，可并行
-  │   └── execute_tool("read_file", {"path": "auth.py"})
+  ├── [5.1] LLM Router.chat() → read_file (只读并行)
+  ├── [5.2] LLM Router.chat() → edit_file (副作用顺序) + ETF 提示注入
+  ├── [5.3] LLM Router.chat() → run_tests (覆盖率 + 失败详情)
   │
-  ├── Ollama.chat() → 模型决定调用 edit_file
-  │   ├── _classify_tool_calls → [edit_file] → 有副作用，顺序执行
-  │   ├── execute_tool("edit_file", {...})
-  │   └── ETF 提示注入: "代码已修改，请运行测试验证"
-  │
-  ├── Ollama.chat() → 模型调用 run_tests
-  │   └── execute_tool("run_tests", {"path": "."})
-  │
-  ├── 任务完成 → _post_task_reflect()
-  │   ├── _llm_reflect() → LLM 深度反思
-  │   ├── evolution.add_reflection() → 记录经验
-  │   └── evolution.check_strategy_evolution() → bug_fix 经验 +1
+  ├── [7] _manage_context_overflow() → Token-aware 压缩
+  ├── [8] _post_task_reflect() → 深度反思 + 策略进化
+  ├── [9] evolution.score_task() → 十五维评分更新
   │
   └── yield {"type": "done"}
 ```
@@ -252,19 +391,43 @@ L4 外部记忆 (RAG + Web)
 ```
 任务开始
   ├── L2/L3 → 检索 → 注入 L1（工作记忆）
+  ├── 自动项目索引 → detect_project + repo_map → 注入上下文
   │
 任务执行中
   ├── 关键中间结果 → 写入 L1
   ├── 遇到知识盲区 → L4 (RAG/Web) → 结果写入 L1
+  ├── 持久化 Shell 状态 → env/cwd 自动保持
   │
 任务完成
   ├── 反思结果 → 写入 L2（长期记忆）
   ├── 发现稳定模式 → 归纳为策略 → 写入 L3（持久记忆）
+  ├── 失败模式 → 恢复引擎记录 → 构建恢复剧本
   │
 定期维护
   ├── 工作记忆 → 会话结束时清理
-  ├── 长期记忆 → 知识蒸馏（合并冗余）
+  ├── 长期记忆 → 知识蒸馏（合并冗余，每 50 次任务）
   └── 持久记忆 → Jaccard 去重（阈值 0.85）
+```
+
+### 3.3 持久化 Shell 会话
+
+```
+_ShellSession 单例
+  │
+  ├── run_command("cd /project && export API_KEY=xxx")
+  │   └── 状态保存: cwd=/project, env={API_KEY: xxx}
+  │
+  ├── run_command("echo $API_KEY && pwd")
+  │   └── 继承状态: 输出 "xxx\n/project"
+  │
+  ├── run_background("python server.py", label="dev-server")
+  │   └── 返回 PID, 加入 _bg_processes 追踪表
+  │
+  ├── check_background("dev-server")
+  │   └── 返回进程状态 + 最新输出
+  │
+  └── stop_background("dev-server")
+      └── 发送 SIGTERM, 清理追踪表
 ```
 
 ## 4. 安全设计
@@ -273,16 +436,20 @@ L4 外部记忆 (RAG + Web)
 
 - **黑名单过滤**：`rm -rf /`, `DROP TABLE` 等危险命令被拦截
 - **超时控制**：命令执行默认 30 秒超时
-- **输出截断**：超长输出自动截断，防止上下文爆炸
+- **输出截断**：超长输出自动截断（`_truncate_output`），防止上下文爆炸
+- **后台进程隔离**：后台进程通过 PID 管理，支持检查和终止
 
-### 4.2 路径访问控制
+### 4.2 文件操作安全
 
 - **路径黑名单**：`/etc/shadow`, `/etc/passwd` 等敏感路径禁止访问
-- **Web API**：文件浏览接口进行路径安全检查
+- **非空目录保护**：`delete_file` 默认不删除非空目录，需显式确认
+- **原子化编辑**：`multi_edit` 失败时自动回滚全部变更，保证一致性
+- **diff 预览**：`edit_file` 操作返回 unified diff，方便审查
 
-### 4.3 输入校验
+### 4.3 Web API 安全
 
-- **工具参数验证**：通过 JSON Schema 验证参数类型和必填项
+- **路径安全检查**：文件浏览接口校验路径范围
+- **输入校验**：工具参数通过 JSON Schema 验证类型和必填项
 - **外部输入隔离**：工具结果通过 `json.dumps` 序列化后传递
 
 ## 5. 配置参考
@@ -296,6 +463,7 @@ L4 外部记忆 (RAG + Web)
 | `model.reflect_temperature` | `0.6` | 反思时使用的温度 |
 | `model.max_iterations` | `20` | ReAct 循环最大轮次 |
 | `model.stream_output` | `true` | 是否启用流式输出 |
+| `model.context_length` | `32768` | 模型上下文窗口大小（token） |
 | `memory.data_dir` | `turing_data` | 数据持久化目录 |
 | `memory.working.max_context_ratio` | `0.3` | 工作记忆占上下文比例 |
 | `memory.working.keep_recent` | `5` | 压缩时保留最近 N 条 |
@@ -307,27 +475,93 @@ L4 外部记忆 (RAG + Web)
 | `security.blocked_commands` | `[rm -rf /, ...]` | 禁止执行的命令模式 |
 | `security.blocked_paths` | `[/etc/shadow, ...]` | 禁止访问的路径 |
 
-## 6. 扩展指南
+## 6. 项目结构
+
+```
+Coding_Agent/
+├── main.py                         # CLI 入口（交互式 REPL / 单次执行）
+├── config.yaml                     # 全局配置
+├── pyproject.toml                  # 构建配置
+├── requirements.txt                # 依赖列表
+├── turing/                         # 核心包
+│   ├── __init__.py                 # 版本号 + 架构说明
+│   ├── agent.py                    # TuringAgent（10 阶段主循环）
+│   ├── config.py                   # Config 单例（YAML 加载 + 点路径访问）
+│   ├── prompt.py                   # SYSTEM_PROMPT（46 项能力声明）
+│   ├── llm/                        # 多 Provider LLM 路由层
+│   │   ├── __init__.py              # 包入口 + 导出
+│   │   ├── provider.py              # LLMProvider ABC + 4 实现
+│   │   └── router.py                # ModelRouter（复杂度路由 + fallback）
+│   ├── benchmark/                  # 基准评测框架
+│   │   ├── __init__.py              # 包入口
+│   │   ├── evaluator.py             # CodeEvaluator + BenchmarkScorer
+│   │   ├── datasets.py              # HumanEvalTask + 12 内置评测题
+│   │   └── runner.py                # BenchmarkRunner（评测调度 + 自修复）
+│   ├── memory/                     # 四层记忆系统
+│   │   ├── manager.py              # MemoryManager（跨层检索 + 统一排序）
+│   │   ├── working.py              # L1 工作记忆（TF-IDF + 会话级）
+│   │   ├── long_term.py            # L2 长期记忆（ChromaDB / JSON 降级）
+│   │   └── persistent.py           # L3 持久记忆（YAML + Jaccard 去重）
+│   ├── rag/
+│   │   └── engine.py               # RAG 引擎（查询扩展 + 代码分块）
+│   ├── evolution/
+│   │   ├── tracker.py              # EvolutionTracker（15 维 + 策略 + 失败恢复 + 自训练）
+│   │   └── metacognition.py        # MetacognitiveEngine（6 维认知雷达）
+│   └── tools/                      # 58 个工具
+│       ├── registry.py             # 工具注册表 + Schema 生成 + 安全调度
+│       ├── file_tools.py           # 文件操作 (9)
+│       ├── command_tools.py        # 命令执行 (4)
+│       ├── search_tools.py         # 代码搜索 + 智能上下文 (4)
+│       ├── git_tools.py            # Git 操作 (8)
+│       ├── test_tools.py           # 测试 (2)
+│       ├── quality_tools.py        # 质量 (3)
+│       ├── refactor_tools.py       # 重构 (3)
+│       ├── project_tools.py        # 项目 (2)
+│       ├── ast_tools.py            # AST (3)
+│       ├── memory_tools.py         # 记忆 (3)
+│       ├── external_tools.py       # 外部 (2)
+│       ├── evolution_tools.py      # 演化 (10)
+│       └── benchmark_tools.py      # 基准评测 (3)
+├── web/                            # Web UI
+│   ├── server.py                   # Flask + SSE 后端
+│   ├── templates/index.html        # VS Code 风格前端
+│   └── static/                     # CSS + JS 静态资源
+├── tests/                          # 测试套件（19 项全通过）
+├── docs/                           # 文档
+│   ├── ARCHITECTURE.md             # 本文件
+│   └── EXAMPLES.md                 # 使用示例集
+├── turing_data/                    # 运行时数据（自动生成）
+└── generated_code/                 # Agent 生成的代码示例
+```
+
+## 7. 扩展指南
 
 ### 添加新工具
 
-1. 在 `turing/tools/` 下创建模块文件
-2. 使用 `@tool` 装饰器定义工具
+1. 在 `turing/tools/` 下创建或修改模块文件
+2. 使用 `@tool` 装饰器定义工具（name, description, parameters）
 3. 在 `agent.py` 中添加 `import turing.tools.xxx  # noqa: F401`
 4. 如果是只读工具，添加到 `_READONLY_TOOLS` 集合
+5. 如果是 v1.0+ 关键工具，添加到 `expected` 集合进行启动检查
 
 ### 添加新记忆层
 
 1. 在 `turing/memory/` 下实现存储类
 2. 实现 `write()`, `search()`, `get_stats()` 等接口
-3. 在 `MemoryManager` 中集成
+3. 在 `MemoryManager` 中集成，设置层级权重
 
 ### 添加新演化维度
 
-1. 在 `EvolutionTracker._score_dimensions()` 中添加评分逻辑
+1. 在 `EvolutionTracker._score_dimensions()` 中添加评分逻辑（当前 15 维）
 2. 在 `SYSTEM_PROMPT` 中描述新维度的能力要求
 3. 更新 `gap_analysis` 工具的差距分析逻辑
 
+### 添加新元认知维度
+
+1. 在 `MetacognitiveEngine` 中添加维度定义
+2. 实现对应的评估逻辑和偏差检测规则
+3. 集成到 checkpoint 扫描流程
+
 ---
 
-*文档版本: v0.6.0 · 最后更新: 2025-07*
+*文档版本: v1.0.0 · 最后更新: 2025-07*

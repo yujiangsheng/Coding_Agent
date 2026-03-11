@@ -32,6 +32,7 @@ from turing.tools.registry import tool
     },
 )
 def detect_project(path: str = ".") -> dict:
+    """自动检测项目类型、语言、框架、测试框架等。"""
     p = Path(path).resolve()
     if not p.is_dir():
         return {"error": f"路径不存在或不是目录: {path}"}
@@ -198,6 +199,7 @@ def detect_project(path: str = ".") -> dict:
     },
 )
 def analyze_dependencies(path: str = ".") -> dict:
+    """解析依赖文件（requirements.txt/package.json/go.mod 等）。"""
     p = Path(path).resolve()
     if not p.is_dir():
         return {"error": f"路径不存在或不是目录: {path}"}

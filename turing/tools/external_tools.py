@@ -15,6 +15,7 @@ _rag_engine = None
 
 
 def set_rag_engine(engine):
+    """注入全局 RAGEngine 实例（Agent 启动时调用）。"""
     global _rag_engine
     _rag_engine = engine
 
@@ -40,6 +41,7 @@ def set_rag_engine(engine):
     },
 )
 def rag_search(query: str, source: str = "docs", top_k: int = 5) -> dict:
+    """通过 RAG 引擎在本地知识库中检索相关文档片段。"""
     if _rag_engine is None:
         return {"error": "RAG 引擎未初始化"}
     return _rag_engine.search(query, source, top_k)
@@ -61,6 +63,7 @@ def rag_search(query: str, source: str = "docs", top_k: int = 5) -> dict:
     },
 )
 def web_search(query: str, max_results: int = 5) -> dict:
+    """通过 DuckDuckGo 搜索外部信息并返回结果列表。"""
     try:
         from duckduckgo_search import DDGS
         with DDGS() as ddgs:

@@ -6,6 +6,42 @@ model:
   reflect_temperature: 0.6
   # 最大迭代轮次
   max_iterations: 20
+  # 模型上下文窗口大小（token，用于 Token-aware 上下文管理）
+  context_length: 32768
+  # 是否启用流式输出
+  stream_output: true
+
+# 多 Provider LLM 路由配置（v2.0）
+# 支持本地 Ollama + 云端 API 协同，按任务复杂度自动路由。
+# 设置 API Key 即可启用对应 provider（也可通过环境变量注入）。
+#
+# llm:
+#   default: ollama
+#   providers:
+#     ollama:
+#       type: ollama
+#       model: qwen3-coder:30b
+#       context_length: 32768
+#     openai:
+#       type: openai
+#       model: gpt-4o
+#       api_key: "sk-..."               # 或设定 OPENAI_API_KEY 环境变量
+#       context_length: 128000
+#     anthropic:
+#       type: anthropic
+#       model: claude-sonnet-4-20250514
+#       api_key: "sk-ant-..."           # 或设定 ANTHROPIC_API_KEY 环境变量
+#       context_length: 200000
+#     deepseek:
+#       type: deepseek
+#       model: deepseek-chat
+#       api_key: "sk-..."               # 或设定 DEEPSEEK_API_KEY 环境变量
+#       context_length: 128000
+#   routing:
+#     simple: ollama                     # 简单任务 → 本地快速模型
+#     medium: ollama                     # 中等任务 → 本地模型
+#     complex: anthropic                 # 复杂任务 → 最强云端模型
+#   fallback_chain: [anthropic, openai, ollama]
 
 memory:
   data_dir: "turing_data"

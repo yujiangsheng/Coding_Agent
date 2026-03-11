@@ -88,6 +88,7 @@ def get_all_tools() -> list[ToolDef]:
 
 
 def get_tool(name: str) -> ToolDef | None:
+    """按名称查找已注册的工具，未找到返回 None。"""
     return _REGISTRY.get(name)
 
 

@@ -1,17 +1,17 @@
 """Turing 智能体主循环
 
-实现完整的 Agent Loop（v0.6.0）：
+实现完整的 Agent Loop（v2.0）：
 
 1. 接收用户输入
 2. 从长期记忆 / 持久记忆中检索相关经验
 3. 匹配策略模板，注入任务指导（策略预播种）
 4. Chain-of-Thought 推理：复杂度评估 + 分层任务分解
-5. 调用 Ollama 本地模型生成响应（支持流式输出）
+5. 调用 LLM 生成响应（多 Provider 支持：Ollama / OpenAI / Anthropic / DeepSeek）
 6. 解析并执行工具调用（只读并行 + 副作用顺序）
 7. 语义错误分析 + 参数自动修正 + ETF 验证循环
 8. 智能上下文管理（优先级滑动窗口 + 摘要折叠）
 9. 任务完成后 LLM 深度反思，积累经验
-10. 触发策略进化 / 知识蒸馏 / 十一维评分更新
+10. 触发策略进化 / 知识蒸馏 / 十五维评分更新
 
 事件流模型：chat() 方法是一个 Generator，通过 yield 产出
 类型化事件字典（thinking / tool_call / tool_result / text /
@@ -35,19 +35,20 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from typing import Any, Generator
-
-import ollama
 
 from turing.config import Config
 from turing.prompt import SYSTEM_PROMPT
 from turing.memory.manager import MemoryManager
 from turing.rag.engine import RAGEngine
 from turing.evolution.tracker import EvolutionTracker
+from turing.evolution.metacognition import MetacognitiveEngine
+from turing.llm import ModelRouter, create_provider
 from turing.tools.registry import get_ollama_tool_schemas, execute_tool
 
 # 注入全局工具依赖
-from turing.tools import memory_tools, external_tools, evolution_tools
+from turing.tools import memory_tools, external_tools, evolution_tools, metacognition_tools
 
 # 确保所有工具被注册（import 即触发 @tool 装饰器）
 import turing.tools.file_tools       # noqa: F401
@@ -62,6 +63,8 @@ import turing.tools.quality_tools    # noqa: F401
 import turing.tools.project_tools    # noqa: F401
 import turing.tools.refactor_tools   # noqa: F401
 import turing.tools.ast_tools       # noqa: F401
+import turing.tools.metacognition_tools  # noqa: F401
+import turing.tools.benchmark_tools       # noqa: F401
 
 
 class TuringAgent:
@@ -82,15 +85,27 @@ class TuringAgent:
         self.stream_output = self.config.get("model.stream_output", True)
         data_dir = self.config.get("memory.data_dir", "turing_data")
 
+        # ===== 多 Provider LLM 路由（v2.0 — 对标 Claude Code / Cursor 的多模型支持）=====
+        self.llm_router = self._init_llm_router()
+
         # 初始化子系统
         self.memory = MemoryManager(data_dir)
         self.rag = RAGEngine(data_dir)
         self.evolution = EvolutionTracker(data_dir, self.memory.persistent)
+        self.metacognition = MetacognitiveEngine(data_dir)
+
+        # 初始化评测系统
+        from turing.benchmark.runner import BenchmarkRunner
+        self.benchmark = BenchmarkRunner(self, data_dir=f"{data_dir}/benchmark")
 
         # 注入全局依赖到工具层
         memory_tools.set_memory_manager(self.memory)
         external_tools.set_rag_engine(self.rag)
         evolution_tools.set_evolution_tracker(self.evolution)
+        metacognition_tools.set_metacognitive_engine(self.metacognition)
+
+        from turing.tools import benchmark_tools
+        benchmark_tools.set_benchmark_runner(self.benchmark)
 
         # 会话消息历史
         self._messages: list[dict] = []
@@ -106,6 +121,70 @@ class TuringAgent:
         # 验证工具注册完整性
         self._validate_tool_registration()
 
+    def _init_llm_router(self) -> ModelRouter:
+        """初始化多 Provider LLM 路由器
+
+        支持三种配置模式：
+        1. config.yaml 中有 llm.providers 配置 → 多 Provider 模式
+        2. 环境变量 OPENAI_API_KEY / ANTHROPIC_API_KEY → 自动注册
+        3. 默认 → 纯 Ollama 本地模式
+        """
+        import os
+        raw_config = self.config._data
+
+        # 模式 1：配置文件中已有 llm 块
+        if "llm" in raw_config and "providers" in raw_config["llm"]:
+            return ModelRouter(raw_config)
+
+        # 模式 2：自动检测环境变量
+        router = ModelRouter()
+        # 始终注册 Ollama 作为基础 provider
+        router.add_provider("ollama", create_provider(
+            "ollama", model=self.model, context_length=self.config.get("model.context_length", 32768),
+        ))
+        router._default = "ollama"
+        router._fallback_chain = ["ollama"]
+
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if openai_key:
+            try:
+                router.add_provider("openai", create_provider(
+                    "openai", model="gpt-4o", api_key=openai_key, context_length=128000,
+                ))
+                router._fallback_chain.insert(0, "openai")
+            except Exception:
+                pass
+
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if anthropic_key:
+            try:
+                router.add_provider("anthropic", create_provider(
+                    "anthropic", model="claude-sonnet-4-20250514", api_key=anthropic_key,
+                    context_length=200000,
+                ))
+                router._fallback_chain.insert(0, "anthropic")
+            except Exception:
+                pass
+
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if deepseek_key:
+            try:
+                router.add_provider("deepseek", create_provider(
+                    "deepseek", model="deepseek-chat", api_key=deepseek_key,
+                    context_length=128000,
+                ))
+            except Exception:
+                pass
+
+        # 设置路由规则：复杂任务优先用强模型
+        best = router._fallback_chain[0] if router._fallback_chain else "ollama"
+        router._routing_rules = {
+            "simple": "ollama",
+            "medium": "ollama",
+            "complex": best,
+        }
+        return router
+
     def start_session(self):
         """启动新会话"""
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -116,24 +195,90 @@ class TuringAgent:
         self._etf_retry_count = 0
         self._error_history = []
 
+        # 自我演化：会话启动时自动检查并触发进化
+        self._auto_evolve()
+
+        # 自动索引项目结构（v2.0 — 对标 Cursor / Windsurf 的项目感知）
+        self._auto_index_project()
+
     def _validate_tool_registration(self):
         """验证所有预期工具都已成功注册"""
         from turing.tools.registry import get_all_tools
         registered = {t.name for t in get_all_tools()}
         expected = {
-            "read_file", "write_file", "edit_file", "run_command",
-            "search_code", "list_directory", "memory_read", "memory_write",
+            "read_file", "write_file", "edit_file", "generate_file",
+            "multi_edit", "move_file", "copy_file", "delete_file", "find_files",
+            "run_command", "run_background", "check_background", "stop_background",
+            "search_code", "list_directory", "repo_map", "smart_context",
+            "memory_read", "memory_write",
             "memory_reflect", "rag_search", "web_search", "learn_from_ai_tool",
             "gap_analysis", "git_status", "git_diff", "git_log", "git_blame",
+            "git_commit", "git_branch", "git_stash", "git_reset",
             "run_tests", "generate_tests", "lint_code", "format_code",
             "type_check", "detect_project", "analyze_dependencies",
             "batch_edit", "rename_symbol", "impact_analysis",
             "code_structure", "call_graph", "complexity_report",
+            "metacognitive_profile", "metacognitive_advice",
+            "synthesize_experiences", "cross_task_transfer",
+            "self_diagnose", "cognitive_adapt",
+            "recovery_advice", "recommend_tools",
+            "run_self_training", "build_recovery_playbook",
+            "run_benchmark", "eval_code", "benchmark_trend",
         }
         missing = expected - registered
         if missing:
             import warnings
             warnings.warn(f"Turing: 以下工具未成功注册: {missing}")
+
+    def _auto_evolve(self):
+        """会话启动时自动触发轻量级自我演化
+
+        条件触发，避免每次启动都有开销：
+        - 首次运行 → 执行自训练模拟器构建基础经验
+        - 有足够 bootstrap 策略但经验不足时 → 合成经验
+        - 有多类型经验时 → 触发跨任务知识迁移
+        - 定期触发认知自适应和恢复剧本更新
+        """
+        try:
+            stats = self.evolution.get_stats()
+            task_count = stats.get("total_reflections", 0)
+
+            # 首次运行或经验极少时执行自训练
+            if task_count < 10:
+                self.evolution.run_self_training()
+            elif task_count < 30:
+                # 经验不足时合成
+                result = self.evolution.synthesize_experiences()
+                if result.get("synthesized", 0) > 0:
+                    self.evolution.cross_task_transfer()
+
+            # 每 10 个任务触发一次认知自适应 + 恢复剧本更新
+            if task_count > 0 and task_count % 10 == 0:
+                self.metacognition.adapt()
+                self.evolution.build_recovery_playbook()
+        except Exception:
+            pass  # 自演化失败不应影响正常会话
+
+    def _auto_index_project(self):
+        """会话启动时自动索引项目结构（v2.0 — 对标 Cursor / Windsurf）
+
+        自动执行 repo_map 生成代码库全貌，注入 system 消息，
+        让 agent 在首次收到用户消息前就已了解项目结构。
+        """
+        try:
+            from turing.tools.registry import execute_tool
+            result = execute_tool("repo_map", {})
+            repo_map = result.get("map", "") if isinstance(result, dict) else ""
+            if repo_map and len(repo_map) > 50:
+                # 截取关键信息（避免过长占满上下文）
+                if len(repo_map) > 4000:
+                    repo_map = repo_map[:4000] + "\n...(结构已截断)..."
+                self._messages.append({
+                    "role": "system",
+                    "content": f"[项目结构自动索引]\n{repo_map}",
+                })
+        except Exception:
+            pass  # 索引失败不影响正常会话
 
     def chat(self, user_input: str) -> Generator[dict, None, None]:
         """处理一次用户输入，流式返回事件
@@ -173,6 +318,31 @@ class TuringAgent:
             })
             yield {"type": "thinking", "content": "已加载匹配的策略模板指导本次任务"}
 
+        # ===== 阶段 0.55：工具推荐 =====
+        try:
+            tool_rec = self.evolution.recommend_tools(user_input)
+            if tool_rec.get("primary_tools"):
+                primary = ", ".join(t["tool"] for t in tool_rec["primary_tools"][:5])
+                explore = ", ".join(tool_rec.get("explore_tools", [])[:3])
+                hint = f"## 工具推荐\n推荐工具: {primary}"
+                if explore:
+                    hint += f"\n探索工具（从未使用，建议尝试）: {explore}"
+                self._messages.append({"role": "system", "content": hint})
+        except Exception:
+            pass
+
+        # ===== 阶段 0.6：元认知初始化 =====
+        meta_init = self.metacognition.begin_task(user_input)
+        if meta_init.get("recommended_depth") == "deep":
+            yield {"type": "thinking", "content": f"元认知评估: 复杂度={meta_init['estimated_complexity']:.2f}, "
+                   f"置信度={meta_init['initial_confidence']:.2f}, "
+                   f"建议推理深度={meta_init['recommended_depth']}"}
+        if meta_init.get("cognitive_advisory"):
+            self._messages.append({
+                "role": "system",
+                "content": f"## 元认知建议\n{meta_init['cognitive_advisory']}",
+            })
+
         # 存入工作记忆
         self.memory.write("working", f"用户请求: {user_input}", tags=["task_start"])
 
@@ -187,6 +357,8 @@ class TuringAgent:
 
         # ===== 主循环 =====
         tool_schemas = get_ollama_tool_schemas()
+        # 获取元认知估计的任务复杂度（用于模型路由）
+        task_complexity = meta_init.get("estimated_complexity", 0.5)
 
         for iteration in range(self.max_iterations):
             # 动态温度：根据执行阶段调整
@@ -194,20 +366,19 @@ class TuringAgent:
 
             try:
                 if self.stream_output:
-                    # 流式输出：逐 token 生成
-                    msg = self._stream_chat(tool_schemas, temperature=current_temp)
+                    # 流式输出：通过 LLM Router 路由
+                    msg = self._stream_chat(tool_schemas, temperature=current_temp,
+                                            task_complexity=task_complexity)
                     if msg is None:
                         yield {"type": "error", "content": "模型调用失败（流式）"}
                         return
-                    # 流式文本已通过 yield 发出，此处 msg 是完整消息
                 else:
-                    response = ollama.chat(
-                        model=self.model,
+                    msg = self.llm_router.chat(
                         messages=self._messages,
                         tools=tool_schemas if tool_schemas else None,
-                        options={"temperature": current_temp},
+                        temperature=current_temp,
+                        task_complexity=task_complexity,
                     )
-                    msg = response.get("message", {})
             except Exception as e:
                 yield {"type": "error", "content": f"模型调用失败: {e}"}
                 return
@@ -281,6 +452,12 @@ class TuringAgent:
 
                 yield {"type": "tool_call", "name": tool_name, "args": tool_args}
 
+                # 元认知检查点：工具选择监控
+                self.metacognition.checkpoint("tool_selection", {
+                    "tool": tool_name, "args": tool_args,
+                    "iteration": iteration,
+                })
+
                 # 执行（含自动重试 + 语义错误分析）
                 result = self._execute_with_retry(tool_name, tool_args)
 
@@ -290,6 +467,19 @@ class TuringAgent:
                         "tool": tool_name, "error": result["error"],
                         "iteration": iteration,
                     })
+                    # 元认知检查点：错误监控
+                    meta_reg = self.metacognition.checkpoint("error_encountered", {
+                        "error": result["error"], "tool": tool_name,
+                        "retry_count": len(self._error_history),
+                    })
+                    if meta_reg and meta_reg.get("regulations"):
+                        for reg in meta_reg["regulations"]:
+                            if reg.get("action") == "debias":
+                                self._messages.append({
+                                    "role": "system",
+                                    "content": f"## 元认知纠偏\n{reg['suggestion']}",
+                                })
+                                yield {"type": "thinking", "content": f"元认知偏差检测: {reg['reason']}"}
                     # 连续错误 → 切换到 debugging 阶段
                     if len(self._error_history) >= 2:
                         self._current_phase = "debugging"
@@ -300,6 +490,17 @@ class TuringAgent:
                                 "content": f"## 错误模式分析\n{error_analysis}\n请基于上述分析调整方案。",
                             })
                             yield {"type": "thinking", "content": f"错误分析: {error_analysis}"}
+
+                        # 失败恢复引擎：获取恢复建议
+                        recovery = self.evolution.get_recovery_advice(
+                            result.get("error", ""), tool_name
+                        )
+                        if recovery.get("advice"):
+                            self._messages.append({
+                                "role": "system",
+                                "content": f"## 失败恢复建议\n{recovery['advice']}",
+                            })
+                            yield {"type": "thinking", "content": f"恢复建议: {recovery['error_category']}"}
                 else:
                     # 成功后清除错误历史并切换回 execution 阶段
                     self._error_history = []
@@ -308,6 +509,17 @@ class TuringAgent:
                     # ETF 循环跟踪：编辑操作后检测是否需要验证
                     if tool_name in ("edit_file", "write_file", "generate_file", "batch_edit"):
                         self._etf_retry_count = 0
+
+                        # === Auto-Commit（对标 Aider 自动提交，支持 undo）===
+                        self._auto_checkpoint(tool_name, tool_args)
+
+                        # === Auto Lint-Fix（对标 Aider 编辑后自动修复）===
+                        edited_path = result.get("path", tool_args.get("path", ""))
+                        if edited_path and edited_path.endswith(".py"):
+                            lint_result = self._auto_lint_fix(edited_path)
+                            if lint_result:
+                                yield {"type": "tool_result", "name": "auto_lint_fix", "result": lint_result}
+
                         # 注入 ETF 提示
                         if not any("请运行测试或验证" in m.get("content", "") for m in self._messages[-3:]):
                             self._messages.append({
@@ -337,6 +549,20 @@ class TuringAgent:
                     "role": "tool",
                     "content": result_str,
                 })
+
+            # 元认知中期检查
+            if iteration > 0 and iteration % 3 == 0:
+                meta_mid = self.metacognition.checkpoint("mid_task_review", {
+                    "iteration": iteration,
+                    "progress": f"{len(self._task_log['actions'])} actions done",
+                })
+                if meta_mid and meta_mid.get("regulations"):
+                    for reg in meta_mid["regulations"]:
+                        if reg.get("action") in ("decompose_task", "increase_verification"):
+                            self._messages.append({
+                                "role": "system",
+                                "content": f"## 元认知调控\n{reg['suggestion']}",
+                            })
 
             # 工作记忆容量检查
             self._check_context_overflow()
@@ -385,6 +611,15 @@ class TuringAgent:
             # 检查知识蒸馏
             self.evolution.check_distillation()
 
+            # 元认知任务结束评估
+            meta_assessment = self.metacognition.end_task(
+                outcome=mechanical["outcome"],
+                reflection=mechanical,
+            )
+            if meta_assessment and "metacognitive_quality" in meta_assessment:
+                mechanical["metacognitive_quality"] = meta_assessment["metacognitive_quality"]
+                mechanical["meta_lessons"] = meta_assessment.get("lessons_meta", [])
+
             return mechanical
         except Exception:
             return None
@@ -408,13 +643,26 @@ class TuringAgent:
         if self._error_history:
             error_summary = f"\n- 执行过程中遇到 {len(self._error_history)} 个错误"
 
+        # 收集元认知信息
+        meta_summary = ""
+        if self.metacognition._current:
+            state = self.metacognition._current
+            meta_summary = (
+                f"\n- 元认知信号: 置信度={state.confidence:.2f}, "
+                f"认知负荷={state.cognitive_load:.2f}, "
+                f"策略切换={state.strategy_switches}次, "
+                f"偏差警报={len(state.bias_alerts)}个"
+            )
+            if state.bias_alerts:
+                meta_summary += f"\n- 检测到偏差: {', '.join(state.bias_alerts[:3])}"
+
         reflect_prompt = (
             f"你刚完成了一个编程任务，请进行深度反思。\n"
             f"- 任务: {user_request}\n"
             f"- 结果: {outcome}\n"
             f"- 使用的工具: {tools_used}\n"
             f"- 工具调用次数: {actions_count}\n"
-            f"- 耗时: {elapsed:.1f}s{error_summary}\n\n"
+            f"- 耗时: {elapsed:.1f}s{error_summary}{meta_summary}\n\n"
             f"请用 JSON 格式回答（不要用 markdown 代码块，直接输出 JSON）：\n"
             f'{{"task_type": "bug_fix/feature/refactor/debug/explain/general 之一",'
             f' "lessons": "一句话总结可复用的经验教训",'
@@ -422,21 +670,24 @@ class TuringAgent:
             f' "what_could_improve": "可以改进的地方",'
             f' "tool_selection_quality": "good/adequate/poor",'
             f' "reasoning_depth": "deep/medium/shallow",'
+            f' "cognitive_bias_detected": "如果有认知偏差，描述之，否则填 null",'
+            f' "confidence_trajectory": "overconfident/calibrated/underconfident",'
+            f' "adaptation_quality": "是否及时根据情况调整了策略，good/adequate/poor",'
             f' "reusable_pattern": "如果有可复用的解题模式，描述之，否则填 null"}}'
         )
 
         # 最多重试 2 次
         for attempt in range(2):
             try:
-                resp = ollama.chat(
-                    model=self.model,
+                resp = self.llm_router.chat(
                     messages=[
                         {"role": "system", "content": "你是一个善于自我反思的编程智能体。输出纯 JSON。"},
                         {"role": "user", "content": reflect_prompt},
                     ],
-                    options={"temperature": reflect_temp},
+                    temperature=reflect_temp,
+                    task_complexity=0.3,
                 )
-                content = resp.get("message", {}).get("content", "")
+                content = resp.get("content", "")
                 content = content.strip()
                 if content.startswith("```"):
                     content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
@@ -588,15 +839,15 @@ class TuringAgent:
             "注意：简洁输出，每段不超过 3 行。"
         )
         try:
-            resp = ollama.chat(
-                model=self.model,
+            resp = self.llm_router.chat(
                 messages=[
                     {"role": "system", "content": "你是一个编程任务规划专家。输出简洁的分析。"},
                     {"role": "user", "content": cot_prompt},
                 ],
-                options={"temperature": reflect_temp},
+                temperature=reflect_temp,
+                task_complexity=0.3,
             )
-            content = resp.get("message", {}).get("content", "").strip()
+            content = resp.get("content", "").strip()
             if content and len(content) > 20:
                 self._current_phase = "execution"
                 # 截取关键部分避免过长
@@ -632,7 +883,8 @@ class TuringAgent:
 
     # 只读工具集合：可安全并行执行
     _READONLY_TOOLS = frozenset({
-        "read_file", "search_code", "list_directory", "memory_read",
+        "read_file", "search_code", "list_directory", "repo_map", "smart_context",
+        "find_files", "memory_read", "check_background",
         "rag_search", "web_search", "git_status", "git_diff", "git_log",
         "git_blame", "detect_project", "analyze_dependencies",
         "impact_analysis", "code_structure", "call_graph",
@@ -745,6 +997,96 @@ class TuringAgent:
 
         return None
 
+    def _auto_lint_fix(self, filepath: str) -> dict | None:
+        """编辑后自动运行 lint 并修复（对标 Aider 的 auto-lint-fix）
+
+        静默修复风格问题，如果有不能自动修复的问题则报告。
+        """
+        import subprocess
+        import shutil
+
+        # 只在有 ruff/flake8 时执行
+        linter = shutil.which("ruff") or shutil.which("flake8")
+        if not linter:
+            return None
+
+        linter_name = Path(linter).name
+        try:
+            if linter_name == "ruff":
+                # Ruff: 先自动修复，再检查残留
+                subprocess.run(
+                    [linter, "check", "--fix", "--quiet", filepath],
+                    capture_output=True, text=True, timeout=15,
+                )
+                check = subprocess.run(
+                    [linter, "check", "--quiet", filepath],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if check.returncode == 0:
+                    return {"auto_lint": "ok", "linter": "ruff", "file": filepath}
+                remaining = check.stdout.strip().split("\n")
+                return {
+                    "auto_lint": "partial",
+                    "linter": "ruff",
+                    "auto_fixed": True,
+                    "remaining_issues": len(remaining),
+                    "details": "\n".join(remaining[:10]),
+                }
+            else:
+                # flake8: 只检查（无自动修复）
+                check = subprocess.run(
+                    [linter, filepath],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if check.returncode == 0:
+                    return {"auto_lint": "ok", "linter": "flake8", "file": filepath}
+                issues = check.stdout.strip().split("\n")
+                return {
+                    "auto_lint": "issues_found",
+                    "linter": "flake8",
+                    "count": len(issues),
+                    "details": "\n".join(issues[:10]),
+                }
+        except Exception:
+            return None
+
+    def _auto_checkpoint(self, tool_name: str, tool_args: dict):
+        """每次编辑后自动 git 提交（对标 Aider 的 auto-commit + /undo）
+
+        让每次编辑后可以通过 git_reset 精确回退到任意步骤。
+        """
+        import subprocess
+        # 检查是否在 git 仓库内
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                return  # 不在 git 仓库中，跳过
+        except Exception:
+            return
+
+        edited_path = tool_args.get("path", "unknown")
+        try:
+            subprocess.run(["git", "add", "-A"], capture_output=True, timeout=5)
+            subprocess.run(
+                ["git", "commit", "-m",
+                 f"turing: {tool_name} on {Path(edited_path).name}",
+                 "--allow-empty"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass  # 自动提交失败不影响主流程
+
+    def undo(self, steps: int = 1) -> dict:
+        """撤销最近的编辑操作（对标 Aider /undo）
+
+        通过 git reset --soft 回退最近 N 个 auto-checkpoint 提交。
+        """
+        from turing.tools.git_tools import git_reset
+        return git_reset(count=steps, hard=False)
+
     def _analyze_error_pattern(self) -> str | None:
         """分析连续错误的模式，提供改进建议（对标 Claude 的语义错误分析）"""
         if len(self._error_history) < 2:
@@ -816,136 +1158,262 @@ class TuringAgent:
             return result_str[:8000] + "\n...(截断)...\n" + result_str[-3000:]
 
     def _check_context_overflow(self):
-        """智能上下文管理（Phase 7 增强 — 对标 Gemini 的大上下文管理）
+        """Token-aware 智能上下文管理（v2.0 — 对标 Claude Code / Cursor 的上下文窗口管理）
 
-        分层压缩 + 优先级滑动窗口策略：
-        1. 计算总上下文大小
-        2. 如果接近限制，先压缩工具结果
-        3. 然后合并相邻 system 消息
-        4. 对超出窗口的历史消息进行摘要折叠
-        5. 最后淘汰低优先级消息
+        v2.0 改进：
+        - 基于 token 估算（~3.5 字符/token 中英混合）替代字符计数
+        - 消息级优先级打分，精确控制保留/丢弃顺序
+        - 渐进式多层压缩（工具压缩 → 历史折叠 → 尾部裁切）
+        - 保护关键信息：系统提示 > 最近用户消息 > 错误工具结果 > 最近助手 > 旧工具结果
 
-        消息优先级（高→低）：
-        - system prompt (核心身份) → 必须保留
-        - 最近的 user 消息 → 必须保留（当前任务上下文）
-        - 最近的 assistant 消息 → 高优先级
-        - tool 结果（含 error） → 高优先级
-        - tool 结果（成功）→ 可压缩
-        - 早期的 system 提示 → 可合并
-        - 早期的 tool 结果 → 可丢弃
+        消息优先级评分：
+        - system prompt      → 100（不可丢弃）
+        - 最近 user 消息     → 90（当前任务上下文）
+        - error tool result  → 80（调试关键）
+        - 最近 assistant     → 70
+        - 成功 tool result   → 40（可压缩）
+        - 早期 user/assistant → 30
+        - 早期 tool          → 10（可丢弃）
         """
-        total_chars = sum(
-            len(json.dumps(m, ensure_ascii=False, default=str))
-            for m in self._messages
-        )
-        threshold = 80000
-        if total_chars <= threshold:
+
+        def _estimate_tokens(text: str) -> int:
+            """估算 token 数（中英混合 ~3.5 字符/token）"""
+            return max(1, int(len(text) / 3.5))
+
+        def _msg_tokens(msg: dict) -> int:
+            t = _estimate_tokens(json.dumps(msg, ensure_ascii=False, default=str))
+            return t
+
+        # Token 限制（模型上下文窗口的 75%：给 response 留空间）
+        # 动态从 LLM Router 获取当前 provider 的上下文长度
+        try:
+            model_ctx = self.llm_router.get_context_length()
+        except Exception:
+            model_ctx = self.config.get("model.context_length", 32768)
+        token_limit = int(model_ctx * 0.75)
+
+        total_tokens = sum(_msg_tokens(m) for m in self._messages)
+        if total_tokens <= token_limit:
             return
 
         self.memory.compress_working_memory(keep_recent=5)
 
-        # 分离消息角色
-        system_prompt = None
-        system_hints = []
-        conversation = []
+        # ── 消息优先级打分 ──
+        msg_count = len(self._messages)
 
-        for i, m in enumerate(self._messages):
-            role = m.get("role", "")
+        def _priority(idx: int, msg: dict) -> int:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            recency = idx / max(msg_count, 1)  # 0.0 = oldest, 1.0 = newest
+
             if role == "system":
-                if system_prompt is None:
-                    system_prompt = m  # 第一个 system 为核心 prompt
-                else:
-                    system_hints.append(m)
-            else:
-                conversation.append(m)
+                return 100 if idx == 0 else 50
 
-        # 第一层：压缩大的 tool 结果（保留语义关键信息）
-        for i, m in enumerate(conversation):
+            is_recent = recency > 0.7
+            if role == "user":
+                return 90 if is_recent else 30
+            elif role == "assistant":
+                if msg.get("tool_calls"):
+                    return 75 if is_recent else 35
+                return 70 if is_recent else 30
+            elif role == "tool":
+                has_error = any(kw in content.lower() for kw in [
+                    "error", "fail", "traceback", "exception", "错误", "失败"
+                ])
+                if has_error:
+                    return 80 if is_recent else 50
+                return 40 if is_recent else 10
+            return 20
+
+        # ── 第一层：压缩大的 tool 结果 ──
+        for i, m in enumerate(self._messages):
             if m.get("role") == "tool":
                 content = m.get("content", "")
-                if len(content) > 2000:
+                pri = _priority(i, m)
+                # 低优先级 + 大结果 → 激进压缩
+                compress_threshold = 1500 if pri < 50 else 3000
+                if len(content) > compress_threshold:
                     key_lines = []
                     for line in content.split("\n"):
                         ll = line.lower()
                         if any(kw in ll for kw in [
                             "error", "fail", "success", "status", "result",
-                            "错误", "成功", "失败", "ok", "traceback"
+                            "错误", "成功", "失败", "ok", "traceback", "assert"
                         ]):
                             key_lines.append(line)
                     if key_lines:
-                        summary = "\n".join(key_lines[:20])
-                        conversation[i] = {
+                        summary = "\n".join(key_lines[:15])
+                        self._messages[i] = {
                             **m,
-                            "content": f"[压缩摘要]\n{summary}\n[原始长度: {len(content)}字符]",
+                            "content": f"[压缩摘要]\n{summary}\n[原始 {len(content)} 字符]",
                         }
                     else:
-                        conversation[i] = {
+                        keep = compress_threshold // 2
+                        self._messages[i] = {
                             **m,
-                            "content": content[:1000] + "\n...(压缩)...\n" + content[-500:],
+                            "content": content[:keep] + "\n...(压缩)...\n" + content[-(keep // 2):],
                         }
 
-        # 第二层：合并 system 提示（保留核心 + 最近 2 条）
-        if len(system_hints) > 2:
-            system_hints = system_hints[-2:]
+        # ── 第二层：折叠低优先级早期对话 ──
+        total_tokens = sum(_msg_tokens(m) for m in self._messages)
+        if total_tokens > token_limit and len(self._messages) > 10:
+            scored = [(i, _priority(i, m), m) for i, m in enumerate(self._messages)]
+            # 保护 system prompt (idx=0) 和最近 8 条
+            protected_indices = {0} | {i for i in range(max(1, msg_count - 8), msg_count)}
 
-        # 第三层：对早期对话进行摘要折叠
-        recalc = sum(
-            len(json.dumps(m, ensure_ascii=False, default=str))
-            for m in ([system_prompt] + system_hints + conversation if system_prompt else system_hints + conversation)
-        )
+            # 收集可丢弃的早期消息
+            droppable = [(i, pri, m) for i, pri, m in scored
+                         if i not in protected_indices and pri < 50]
+            droppable.sort(key=lambda x: x[1])  # 按优先级升序
 
-        if recalc > threshold and len(conversation) > 10:
-            # 将早期消息折叠为摘要
-            keep_recent = 10
-            early = conversation[:-keep_recent]
-            recent = conversation[-keep_recent:]
-
-            # 提取早期阶段的关键信息
+            # 提取摘要再丢弃
+            drop_indices = set()
             summary_parts = []
-            tools_used = set()
-            errors_encountered = []
-            for m in early:
+            tokens_freed = 0
+
+            for i, pri, m in droppable:
+                if total_tokens - tokens_freed <= token_limit:
+                    break
                 role = m.get("role", "")
                 content = m.get("content", "")
                 if role == "user":
-                    summary_parts.append(f"用户: {content[:100]}")
-                elif role == "tool":
-                    # 提取工具名和结果状态
-                    if "error" in content.lower():
-                        errors_encountered.append(content[:80])
+                    summary_parts.append(f"用户: {content[:80]}")
                 elif role == "assistant" and content:
-                    # 保留 assistant 的前 50 字符
-                    summary_parts.append(f"助手: {content[:80]}")
+                    summary_parts.append(f"助手: {content[:60]}")
+                drop_indices.add(i)
+                tokens_freed += _msg_tokens(m)
 
-            if summary_parts or errors_encountered:
-                fold_text = "[早期对话摘要]\n"
+            if drop_indices:
+                fold_text = f"[早期对话摘要 ({len(drop_indices)} 条消息已折叠)]\n"
                 if summary_parts:
-                    fold_text += "\n".join(summary_parts[:8]) + "\n"
-                if errors_encountered:
-                    fold_text += f"遇到 {len(errors_encountered)} 个错误\n"
-                conversation = [{"role": "system", "content": fold_text}] + recent
-            else:
-                conversation = recent
+                    fold_text += "\n".join(summary_parts[:10]) + "\n"
 
-        # 第四层：极端情况下只保留最近消息
-        if len(conversation) > 16:
-            conversation = conversation[-14:]
+                new_messages = []
+                fold_inserted = False
+                for i, m in enumerate(self._messages):
+                    if i in drop_indices:
+                        if not fold_inserted:
+                            new_messages.append({"role": "system", "content": fold_text})
+                            fold_inserted = True
+                    else:
+                        new_messages.append(m)
+                self._messages = new_messages
 
-        # 重组消息
-        rebuilt = []
-        if system_prompt:
-            rebuilt.append(system_prompt)
-        rebuilt.extend(system_hints)
-        rebuilt.extend(conversation)
-        self._messages = rebuilt
+        # ── 第三层：合并多余 system 消息 ──
+        system_count = sum(1 for m in self._messages if m.get("role") == "system")
+        if system_count > 3:
+            core = self._messages[0]
+            others = []
+            non_system = []
+            for i, m in enumerate(self._messages[1:], 1):
+                if m.get("role") == "system":
+                    others.append(m)
+                else:
+                    non_system.append(m)
+            # 保留最近 2 个 system hint
+            kept_hints = others[-2:] if len(others) > 2 else others
+            self._messages = [core] + kept_hints + non_system
+
+        # ── 第四层：极端裁切 ──
+        total_tokens = sum(_msg_tokens(m) for m in self._messages)
+        if total_tokens > token_limit and len(self._messages) > 6:
+            # 保留 system prompt + 最近 N 条（动态计算 N）
+            core = [self._messages[0]]
+            # 从后往前累计 token，直到逼近限制
+            core_tokens = _msg_tokens(core[0])
+            recent = []
+            for m in reversed(self._messages[1:]):
+                mt = _msg_tokens(m)
+                if core_tokens + mt > token_limit:
+                    break
+                recent.insert(0, m)
+                core_tokens += mt
+            self._messages = core + recent
 
     def get_memory_stats(self) -> dict:
         """获取记忆系统统计"""
         return self.memory.get_stats()
 
+    def compact(self) -> dict:
+        """主动压缩上下文（对标 Claude Code 的 /compact 命令）
+
+        使用 LLM 将整个对话历史压缩为精简摘要，
+        释放上下文空间以继续长时间对话。
+        """
+        if len(self._messages) <= 3:
+            return {"status": "skip", "reason": "对话太短，无需压缩"}
+
+        # 收集对话中的关键信息
+        file_edits = []
+        tools_used = set()
+        errors = []
+        user_requests = []
+        assistant_replies = []
+
+        for m in self._messages[1:]:  # 跳过 system prompt
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "user":
+                user_requests.append(content[:200])
+            elif role == "assistant" and content:
+                assistant_replies.append(content[:150])
+            elif role == "tool":
+                if "error" in content.lower():
+                    errors.append(content[:100])
+                if '"path"' in content or '"status": "ok"' in content:
+                    file_edits.append(content[:80])
+            # 提取工具调用信息
+            for tc in m.get("tool_calls", []):
+                func = tc.get("function", {})
+                tools_used.add(func.get("name", ""))
+
+        # 构建压缩摘要
+        summary_lines = ["[上下文压缩摘要]"]
+        summary_lines.append(f"对话轮次: {len(user_requests)}")
+        summary_lines.append(f"使用工具: {', '.join(sorted(tools_used))}")
+
+        if user_requests:
+            summary_lines.append("用户请求:")
+            for i, req in enumerate(user_requests[-5:], 1):
+                summary_lines.append(f"  {i}. {req}")
+
+        if file_edits:
+            summary_lines.append(f"文件操作: {len(file_edits)} 次编辑")
+        if errors:
+            summary_lines.append(f"遇到错误: {len(errors)} 个")
+
+        if assistant_replies:
+            summary_lines.append(f"最近回复: {assistant_replies[-1]}")
+
+        summary_text = "\n".join(summary_lines)
+        old_count = len(self._messages)
+        old_chars = sum(len(json.dumps(m, ensure_ascii=False, default=str)) for m in self._messages)
+
+        # 重建消息：system prompt + 摘要 + 最近 4 条消息
+        system_prompt = self._messages[0]
+        recent = [m for m in self._messages[-4:] if m.get("role") != "system"]
+
+        self._messages = [
+            system_prompt,
+            {"role": "system", "content": summary_text},
+        ] + recent
+
+        new_chars = sum(len(json.dumps(m, ensure_ascii=False, default=str)) for m in self._messages)
+
+        return {
+            "status": "ok",
+            "messages_before": old_count,
+            "messages_after": len(self._messages),
+            "chars_before": old_chars,
+            "chars_after": new_chars,
+            "compression_ratio": f"{(1 - new_chars / max(old_chars, 1)):.0%}",
+        }
+
     def get_evolution_stats(self) -> dict:
         """获取演化统计"""
-        return self.evolution.get_stats()
+        stats = self.evolution.get_stats()
+        stats["metacognition"] = self.metacognition.get_metacognitive_profile()
+        return stats
 
     def index_project(self, project_path: str) -> dict:
         """索引项目到 RAG 知识库"""
@@ -953,37 +1421,20 @@ class TuringAgent:
 
     # ===== Phase 3: 流式输出 =====
 
-    def _stream_chat(self, tool_schemas: list, temperature: float = None) -> dict | None:
-        """流式调用 Ollama 模型，逐 token 输出
+    def _stream_chat(self, tool_schemas: list, temperature: float = None,
+                      task_complexity: float = 0.5) -> dict | None:
+        """流式调用 LLM（通过 ModelRouter），逐 token 输出
 
         返回组装后的完整消息（与非流式兼容）。
-        流式 token 通过回调或由上层循环拉取。
         """
         temp = temperature if temperature is not None else self.temperature
         try:
-            stream = ollama.chat(
-                model=self.model,
+            return self.llm_router.stream_chat(
                 messages=self._messages,
                 tools=tool_schemas if tool_schemas else None,
-                options={"temperature": temp},
-                stream=True,
+                temperature=temp,
+                task_complexity=task_complexity,
             )
-            assembled = {"role": "assistant", "content": ""}
-            tool_calls = []
-
-            for chunk in stream:
-                msg = chunk.get("message", {})
-                # 累积文本
-                if msg.get("content"):
-                    assembled["content"] += msg["content"]
-                # 累积工具调用
-                if msg.get("tool_calls"):
-                    tool_calls.extend(msg["tool_calls"])
-
-            if tool_calls:
-                assembled["tool_calls"] = tool_calls
-
-            return assembled
         except Exception:
             return None
 

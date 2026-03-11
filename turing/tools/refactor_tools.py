@@ -58,6 +58,7 @@ def batch_edit(
     is_regex: bool = False,
     dry_run: bool = True,
 ) -> dict:
+    """跨文件批量搜索替换（支持正则和 dry_run 预览）。"""
     from turing.config import Config
     cfg = Config.load()
     workspace = cfg.get("security.workspace_root", None) or path
@@ -161,6 +162,7 @@ def rename_symbol(
     path: str = ".",
     dry_run: bool = True,
 ) -> dict:
+    """安全重命名符号（词边界匹配，支持 dry_run）。"""
     # 使用词边界匹配，只替换完整符号
     # 确保不误替换更长的名称如 old_name_extra
     pattern = r"\b" + re.escape(old_name) + r"\b"

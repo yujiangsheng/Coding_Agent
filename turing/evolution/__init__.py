@@ -1,24 +1,44 @@
-"""自我演化系统 (Self-Evolution Engine)
+"""自我演化系统 (Self-Evolution Engine v3.0)
 
-Turing 的持续进化能力由 :class:`EvolutionTracker` 驱动，包含四大子能力：
+Turing 的持续进化能力由 :class:`EvolutionTracker` 和 :class:`MetacognitiveEngine` 驱动：
 
-1. **经验积累** — 每次任务后记录反思（成功/失败/工具使用/耗时），
-   按 task_type 分类归档（bug_fix / feature / refactor / debug / explain / general）。
+**EvolutionTracker** — 十大子能力：
 
-2. **策略进化** — 同类任务 ≥5 条经验后，自动从成功案例中归纳策略模板，
-   提取推荐步骤与最佳实践，加权综合（时间衰减 × 成功率）。
+1. **经验积累** — 每次任务后记录反思（outcome、工具组合、经验教训）。
+2. **策略进化** — 同类任务 ≥5 条经验后自动归纳策略模板。
+3. **知识蒸馏** — 每 50 次任务触发合并去重、淘汰过时经验。
+4. **AI 工具对比学习** — 分析 Claude Opus / Codex / Gemini / Copilot 策略并内化。
+5. **经验合成** — 从引导策略合成模拟经验，加速策略从 bootstrapped 进化为 evolved。
+6. **跨任务知识迁移** — bug_fix↔debug、feature↔refactor 技巧互通。
+7. **自我诊断** — 策略成熟度、工具利用率、失败模式、进化速度 4D 评估。
+8. **失败恢复引擎** — 8 种失败模式分类、三级恢复策略、工具替代映射。
+9. **工具探索顾问** — 基于任务特征推荐核心工具 + 探索工具，提升覆盖率。
+10. **自训练模拟器** — 6 类型 × 3 难度生成含成功/失败的训练经验。
 
-3. **知识蒸馏** — 每 50 次任务触发一次，合并冗余反思，淘汰低质量条目，
-   生成能力成长报告（十一维评分：代码质量/调试/架构/效率/安全/沟通/工具多样性/推理深度/记忆利用率/学习速率/验证覆盖率）。
+**MetacognitiveEngine** — 元认知八维能力：
 
-4. **AI 工具对比学习** — 分析 Claude Opus / Codex / Gemini / Copilot 的策略，
-   提取差异化优势并内化为自身策略，识别能力差距并生成改进路线图。
+11. **认知监控** — 实时评估推理质量、置信度、认知负荷。
+12. **认知调控** — 根据监控信号动态调整策略、推理深度、工具选择。
+13. **置信校准** — 校准预测置信度与实际成功率，防止系统性偏差。
+14. **偏差检测** — 识别确认偏差、锚定偏差、决策振荡等认知陷阱。
+15. **知识边界感** — 识别不确定性来源，知道何时需要更多信息。
+16. **元认知反思** — 跨任务聚合元认知数据，生成能力画像和提升建议。
+17. **认知自适应** — 自动调整置信度基线、负荷阈值、偏差灵敏度。
+18. **认知效率** — 监控认知资源开销，优化推理效率。
+
+**评分系统** — 15 维度评分（10 分满分）。
 
 数据存储::
 
     turing_data/
     ├── evolution/
-    │   └── reflections.json     # 所有任务反思
+    │   ├── reflections.json          # 所有任务反思
+    │   ├── metacognition.json        # 元认知评估记录
+    │   ├── calibration.json          # 置信校准历史
+    │   ├── self_diagnosis.json       # 自我诊断报告
+    │   ├── cognitive_adaptations.json # 认知自适应参数
+    │   ├── gap_analysis.json         # 差距分析报告
+    │   └── recovery_playbook.json    # 失败恢复剧本
     └── persistent_memory/
         ├── strategies/          # 策略模板 (per task_type)
         ├── evolution_log.json   # 进化里程碑

@@ -90,6 +90,7 @@ def _detect_linter(path: str = ".") -> tuple[str, str]:
     },
 )
 def lint_code(path: str = ".", fix: bool = False) -> dict:
+    """运行 Linter（自动检测 Ruff/flake8/ESLint 等）。"""
     linter_name, base_cmd = _detect_linter(path)
     if not base_cmd:
         return {"error": "未检测到可用的 linter 工具。请安装 ruff、flake8 或 eslint。"}
@@ -137,6 +138,7 @@ def lint_code(path: str = ".", fix: bool = False) -> dict:
     },
 )
 def format_code(path: str = ".", check_only: bool = False) -> dict:
+    """运行代码格式化（自动检测 Black/Prettier 等）。"""
     import shutil
     p = Path(path).resolve()
 
@@ -195,6 +197,7 @@ def format_code(path: str = ".", check_only: bool = False) -> dict:
     },
 )
 def type_check(path: str = ".", strict: bool = False) -> dict:
+    """运行类型检查（自动检测 mypy/pyright/tsc）。"""
     import shutil
     p = Path(path).resolve()
 
