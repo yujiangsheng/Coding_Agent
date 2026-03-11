@@ -1,6 +1,6 @@
 # 系统架构设计文档
 
-> Turing v2.0 — 自进化编程智能体
+> Turing v2.1 — 自进化编程智能体
 
 ## 1. 总体架构
 
@@ -18,8 +18,8 @@ Turing 采用分层架构设计，每层职责清晰、松耦合：
 ├──────────┬───────────┬───────────┬───────────────────────────────────┤
 │  工具引擎 │   记忆系统 │   RAG 引擎│   演化系统 + 元认知引擎          │
 ├──────────┼───────────┼───────────┼───────────────────────────────────┤
-│  15 模块  │   4 层     │  ChromaDB │  15 维评分 · 策略进化 · 失败恢复 │
-│  58 工具  │   TF-IDF   │  + JSON   │  自训练模拟器 · 6 维认知雷达     │
+│  16 模块  │   4 层     │  ChromaDB │  15 维评分 · 策略进化 · 失败恢复 │
+│  61 工具  │   TF-IDF   │  + JSON   │  自训练模拟器 · 6 维认知雷达     │
 │  21 并行  │   跨层排序 │  查询扩展 │  经验合成 · 知识迁移             │
 └──────────┴───────────┴───────────┴─────────────────────────────────┘
          ↕                  ↕               ↕
@@ -91,7 +91,7 @@ def my_tool(arg1: str) -> dict:
 - 自动生成 Ollama function calling schema（`get_ollama_tool_schemas()`）
 - `execute_tool()` 通过 `inspect.signature()` 自动过滤多余参数
 
-**15 个工具模块（58 工具）：**
+**16 个工具模块（61 工具）：**
 
 | 模块 | 工具数 | 说明 |
 |------|--------|------|
@@ -108,6 +108,7 @@ def my_tool(arg1: str) -> dict:
 | `external_tools.py` | 2 | RAG 检索 + Web 搜索 |
 | `evolution_tools.py` | 10 | 策略进化 + 蒸馏 + AI学习 + 失败恢复 + 自训练 + 探索 |
 | `benchmark_tools.py` | 3 | HumanEval 评测 + 代码质量评估 + 评测趋势 |
+| `mcp_tools.py` | 3 | MCP 服务器管理 + 外部工具发现 + 外部工具调用 |
 | `registry.py` | — | 注册表 + Schema 生成 + 安全调度 |
 
 **并行执行策略：**
@@ -122,6 +123,7 @@ _READONLY_TOOLS = {
     "impact_analysis", "code_structure", "call_graph",
     "complexity_report", "gap_analysis", "find_files",
     "check_background", "smart_context",
+    "mcp_list_servers", "mcp_list_tools",
 }
 ```
 
@@ -130,6 +132,9 @@ _READONLY_TOOLS = {
 | 工具 | 特性 |
 |------|------|
 | `smart_context` | 智能上下文收集（import 链追踪 / 符号引用 / 错误堆栈解析） |
+| `mcp_list_servers` | MCP 服务器状态查看（连接状态 + 工具数） |
+| `mcp_list_tools` | MCP 外部工具发现（列出已连接服务器的全部工具） |
+| `mcp_call_tool` | MCP 外部工具调用（通过 mcp::server::tool 名称路由） |
 | `run_benchmark` | HumanEval 风格基准评测，pass@k 指标 + 业界分数横向对比 |
 | `eval_code` | 多维代码质量评估（语法 + lint + 圈复杂度 + 安全模式） |
 | `benchmark_trend` | 历史评测分数趋势追踪，量化能力进化 |
@@ -272,14 +277,68 @@ BenchmarkRunner
     └── Qwen3-Coder-30B: 72%
 ```
 
-### 2.6 RAG 引擎（`rag/engine.py`）
+### 2.6 MCP 协议层（`mcp/`）
+
+v2.1 新增 MCP (Model Context Protocol) 集成，实现双向工具生态扩展：
+
+```
+MCPManager (manager.py)
+├── load_from_config(mcp_config)
+│   └── 解析 config.yaml 的 mcp.servers 块
+│
+├── connect_all()
+│   ├── _connect_server(name, cfg)
+│   │   ├── stdio → StdioTransport(command, env)
+│   │   └── sse → SSETransport(url, headers)
+│   └── _discover_and_register(name, client, cfg)
+│       ├── client.list_tools() → MCP 工具发现
+│       ├── mcp_tool_to_turing_schema() → 转换为 Turing ToolDef
+│       ├── make_caller() → 创建桥接闭包函数
+│       └── _REGISTRY[f"mcp::{server}::{tool}"] → 动态注册
+│
+├── disconnect_server(name)
+│   └── _unregister_tools(name) → 从 _REGISTRY 移除
+│
+└── get_status() / get_mcp_tool_names() / is_mcp_tool()
+
+MCPClient (client.py)
+├── 传输层
+│   ├── StdioTransport — 子进程 stdin/stdout + select 非阻塞读
+│   └── SSETransport — HTTP POST + SSE 后台监听线程
+├── JSON-RPC 2.0 协议
+│   ├── _handshake() → initialize + notifications/initialized
+│   ├── list_tools() → tools/list
+│   ├── call_tool(name, args) → tools/call
+│   └── list_resources() / read_resource(uri)
+└── 工具转换
+    ├── _mcp_result_to_dict() → MCP 结果 → Turing dict 格式
+    └── mcp_tool_to_turing_schema() → MCP inputSchema → Turing 参数 schema
+
+MCPServer (server.py)
+├── stdio JSON-RPC 2.0 服务
+├── 支持方法：initialize / tools/list / tools/call / resources/list / resources/read / ping
+├── 自动过滤 mcp:: 前缀工具（避免递归暴露）
+├── 暴露资源：turing://strategies / turing://evolution / turing://gap_analysis
+└── 入口：python -m turing.mcp.server
+```
+
+**设计决策：**
+
+| 决策 | 实现 | 原因 |
+|------|------|------|
+| 同步 MCP 客户端 | 自建 sync 客户端（非 async SDK） | Turing 工具系统全同步，避免引入 asyncio |
+| 命名空间隔离 | `mcp::server::tool` 格式 | 多服务器工具名冲突避免 |
+| 动态注册 | 直接操作 `_REGISTRY` dict | 运行时连接/断开服务器 |
+| 递归防护 | server.py 过滤 `mcp_` 前缀工具 | 避免 MCP 服务暴露 MCP 管理工具 |
+
+### 2.7 RAG 引擎（`rag/engine.py`）
 
 - **查询扩展**：自动展开同义词和相关关键词
 - **代码感知分块**：按函数/类边界分块（而非固定长度），保持语义完整性
 - **双存储后端**：优先 ChromaDB 向量库，无则降级为 JSON TF-IDF
 - **索引 API**：`/index <路径>` 可索引本地项目到 RAG 知识库
 
-### 2.7 演化系统（`evolution/tracker.py`）
+### 2.8 演化系统（`evolution/tracker.py`）
 
 自我演化是 Turing 的核心差异化能力。v2.0 新增了基准评测框架量化进化进度。
 
@@ -320,7 +379,7 @@ BenchmarkRunner
   └── ⑬ 自主性        ⑭ 上下文管理     ⑮ 持续改进
 ```
 
-### 2.8 元认知引擎（`evolution/metacognition.py`）
+### 2.9 元认知引擎（`evolution/metacognition.py`）
 
 v0.8 新增的元认知系统，提供 6 维认知自我监控：
 
@@ -474,6 +533,7 @@ _ShellSession 单例
 | `evolution.distill_interval` | `50` | 触发知识蒸馏的任务间隔 |
 | `security.blocked_commands` | `[rm -rf /, ...]` | 禁止执行的命令模式 |
 | `security.blocked_paths` | `[/etc/shadow, ...]` | 禁止访问的路径 |
+| `mcp.servers` | `{}` | MCP 服务器配置（server_name → transport/command/url） |
 
 ## 6. 项目结构
 
@@ -487,11 +547,16 @@ Coding_Agent/
 │   ├── __init__.py                 # 版本号 + 架构说明
 │   ├── agent.py                    # TuringAgent（10 阶段主循环）
 │   ├── config.py                   # Config 单例（YAML 加载 + 点路径访问）
-│   ├── prompt.py                   # SYSTEM_PROMPT（46 项能力声明）
+│   ├── prompt.py                   # SYSTEM_PROMPT（49 项能力声明）
 │   ├── llm/                        # 多 Provider LLM 路由层
 │   │   ├── __init__.py              # 包入口 + 导出
 │   │   ├── provider.py              # LLMProvider ABC + 4 实现
 │   │   └── router.py                # ModelRouter（复杂度路由 + fallback）
+│   ├── mcp/                        # MCP 协议集成层
+│   │   ├── __init__.py              # 包入口（导出 MCPClient, MCPManager）
+│   │   ├── client.py                # MCP 客户端（stdio/SSE 双传输 + JSON-RPC 2.0）
+│   │   ├── manager.py               # 多服务器连接管理 + 工具动态注册
+│   │   └── server.py                # MCP 服务端（暴露 Turing 工具给外部客户端）
 │   ├── benchmark/                  # 基准评测框架
 │   │   ├── __init__.py              # 包入口
 │   │   ├── evaluator.py             # CodeEvaluator + BenchmarkScorer
@@ -507,7 +572,7 @@ Coding_Agent/
 │   ├── evolution/
 │   │   ├── tracker.py              # EvolutionTracker（15 维 + 策略 + 失败恢复 + 自训练）
 │   │   └── metacognition.py        # MetacognitiveEngine（6 维认知雷达）
-│   └── tools/                      # 58 个工具
+│   └── tools/                      # 61 个工具
 │       ├── registry.py             # 工具注册表 + Schema 生成 + 安全调度
 │       ├── file_tools.py           # 文件操作 (9)
 │       ├── command_tools.py        # 命令执行 (4)
@@ -521,7 +586,8 @@ Coding_Agent/
 │       ├── memory_tools.py         # 记忆 (3)
 │       ├── external_tools.py       # 外部 (2)
 │       ├── evolution_tools.py      # 演化 (10)
-│       └── benchmark_tools.py      # 基准评测 (3)
+│       ├── benchmark_tools.py      # 基准评测 (3)
+│       └── mcp_tools.py            # MCP 集成 (3)
 ├── web/                            # Web UI
 │   ├── server.py                   # Flask + SSE 后端
 │   ├── templates/index.html        # VS Code 风格前端
@@ -564,4 +630,4 @@ Coding_Agent/
 
 ---
 
-*文档版本: v1.0.0 · 最后更新: 2025-07*
+*文档版本: v2.1.0 · 最后更新: 2025-07*

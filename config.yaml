@@ -78,6 +78,31 @@ security:
     - "rm -rf ~"
     - "mkfs"
     - "dd if="
+
+# MCP 协议集成（v2.1）
+# 通过 Model Context Protocol 连接外部工具服务器，扩展 Turing 的工具能力。
+# 支持 stdio（子进程）和 SSE（HTTP）两种传输方式。
+# 配置后 Turing 会在启动时自动连接并发现外部工具。
+#
+# mcp:
+#   servers:
+#     filesystem:
+#       transport: stdio
+#       command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+#       enabled: true
+#       readonly_tools: ["read_file", "list_directory"]
+#     github:
+#       transport: sse
+#       url: http://localhost:3000/sse
+#       headers:
+#         Authorization: "Bearer ghp_xxx"
+#       enabled: true
+#     sqlite:
+#       transport: stdio
+#       command: ["npx", "-y", "@modelcontextprotocol/server-sqlite", "test.db"]
+#       env:
+#         NODE_ENV: production
+#       enabled: false
     - ":(){:|:&};:"
     - "DROP TABLE"
     - "DROP DATABASE"

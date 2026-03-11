@@ -42,11 +42,12 @@ class TestToolRegistration:
         import turing.tools.evolution_tools
         import turing.tools.metacognition_tools
         import turing.tools.benchmark_tools
+        import turing.tools.mcp_tools
 
     def test_total_tool_count(self):
         from turing.tools.registry import get_all_tools
         tools = get_all_tools()
-        assert len(tools) == 58, f"Expected 58 tools, got {len(tools)}"
+        assert len(tools) == 61, f"Expected 61 tools, got {len(tools)}"
 
     def test_new_tools_registered(self):
         from turing.tools.registry import get_all_tools
@@ -262,7 +263,7 @@ class TestVersion:
 
     def test_version(self):
         import turing
-        assert turing.__version__ == "2.0.0"
+        assert turing.__version__ == "2.1.0"
 
     def test_prompt_capabilities_count(self):
         from turing.prompt import SYSTEM_PROMPT
@@ -270,7 +271,7 @@ class TestVersion:
         import re
         cap_section = SYSTEM_PROMPT.split("你具备以下能力：")[1].split("## 核心原则")[0]
         caps = re.findall(r'^\d+\.', cap_section, re.MULTILINE)
-        assert len(caps) == 46, f"Expected 46 capabilities, found {len(caps)}"
+        assert len(caps) == 49, f"Expected 49 capabilities, found {len(caps)}"
 
 
 if __name__ == "__main__":

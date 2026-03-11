@@ -3,11 +3,8 @@
 基于本地大模型（Qwen3-Coder 30B）的编程 Agent，对标 Aider / Cursor / Claude Code / Devin，具备：
 
 - **四层记忆系统** — L1 工作记忆 / L2 长期记忆 / L3 持久记忆 / L4 外部记忆（RAG）
-- **54 内置工具** — 文件管理（读写/编辑/diff/移动/复制/删除/查找/多文件原子编辑）、
-  持久化 Shell 会话（环境变量/cwd 跨调用保持 + 后台进程管理）、
-  代码搜索（文本/Repo Map）、Git 完整工作流（commit/branch/stash/reset/undo）、
-  测试运行（覆盖率+失败详情提取）、代码质量检查（auto lint-fix）、
-  批量重构、项目分析、记忆管理、RAG 检索、Web 搜索、AI 工具学习、AST 深度代码分析
+- **61 内置工具** — 文件管理、持久化 Shell、Git 完整工作流、代码搜索、
+  测试运行、AST 分析、基准评测、MCP 协议集成等
 - **自我演化** — 任务反思 → 经验积累 → 策略进化 → 知识蒸馏 → AI 工具对比学习
   → 失败恢复引擎 → 自训练模拟器 → 15 维评分系统
 - **元认知系统** — 6 维认知雷达、偏差检测、置信校准、认知自适应
@@ -41,5 +38,5 @@ Author: Jiangsheng Yu
 License: MIT
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __author__ = "Jiangsheng Yu"

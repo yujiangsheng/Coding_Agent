@@ -48,7 +48,7 @@ from turing.llm import ModelRouter, create_provider
 from turing.tools.registry import get_ollama_tool_schemas, execute_tool
 
 # 注入全局工具依赖
-from turing.tools import memory_tools, external_tools, evolution_tools, metacognition_tools
+from turing.tools import memory_tools, external_tools, evolution_tools, metacognition_tools, mcp_tools
 
 # 确保所有工具被注册（import 即触发 @tool 装饰器）
 import turing.tools.file_tools       # noqa: F401
@@ -65,6 +65,7 @@ import turing.tools.refactor_tools   # noqa: F401
 import turing.tools.ast_tools       # noqa: F401
 import turing.tools.metacognition_tools  # noqa: F401
 import turing.tools.benchmark_tools       # noqa: F401
+import turing.tools.mcp_tools             # noqa: F401
 
 
 class TuringAgent:
@@ -106,6 +107,9 @@ class TuringAgent:
 
         from turing.tools import benchmark_tools
         benchmark_tools.set_benchmark_runner(self.benchmark)
+
+        # ===== MCP 集成（v2.1 — 对标 Claude Code 工具扩展协议）=====
+        self.mcp = self._init_mcp()
 
         # 会话消息历史
         self._messages: list[dict] = []
@@ -185,6 +189,41 @@ class TuringAgent:
         }
         return router
 
+    def _init_mcp(self):
+        """初始化 MCP 集成
+
+        从 config.yaml 的 mcp.servers 块加载 MCP 服务器配置，
+        连接所有已启用的服务器，将外部工具注册到 Turing 工具注册表。
+
+        配置示例::
+
+            mcp:
+              servers:
+                filesystem:
+                  transport: stdio
+                  command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+                github:
+                  transport: sse
+                  url: http://localhost:3000
+                  headers:
+                    Authorization: "Bearer xxx"
+        """
+        from turing.mcp.manager import MCPManager
+
+        manager = MCPManager()
+        mcp_config = self.config.get("mcp.servers", {})
+        if mcp_config:
+            manager.load_from_config(mcp_config)
+            results = manager.connect_all()
+            for name, status in results.items():
+                if "error" in status:
+                    import warnings
+                    warnings.warn(f"MCP 服务器 [{name}] 连接失败: {status}")
+
+        # 注入 MCPManager 到 MCP 工具模块
+        mcp_tools.set_mcp_manager(manager)
+        return manager
+
     def start_session(self):
         """启动新会话"""
         self._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -224,6 +263,7 @@ class TuringAgent:
             "recovery_advice", "recommend_tools",
             "run_self_training", "build_recovery_playbook",
             "run_benchmark", "eval_code", "benchmark_trend",
+            "mcp_list_servers", "mcp_list_tools", "mcp_call_tool",
         }
         missing = expected - registered
         if missing:
@@ -889,6 +929,7 @@ class TuringAgent:
         "git_blame", "detect_project", "analyze_dependencies",
         "impact_analysis", "code_structure", "call_graph",
         "complexity_report", "gap_analysis",
+        "mcp_list_servers", "mcp_list_tools",
     })
 
     def _classify_tool_calls(self, tool_calls: list[dict]) -> tuple[list, list]:

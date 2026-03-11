@@ -4,13 +4,13 @@
 
 **自进化编程智能体 · Self-Evolving Coding Agent**
 
-*多模型 AI Coding Agent，具备四层记忆、58 内置工具、多 Provider LLM 路由、基准评测、元认知、自我演化*
+*多模型 AI Coding Agent，具备四层记忆、61 内置工具、MCP 协议集成、多 Provider LLM 路由、基准评测、元认知、自我演化*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-green.svg)](https://python.org)
 [![Model: Multi-Provider](https://img.shields.io/badge/Model-Ollama%20%7C%20OpenAI%20%7C%20Anthropic%20%7C%20DeepSeek-orange.svg)](https://ollama.com)
-[![Version](https://img.shields.io/badge/Version-2.0.0-purple.svg)](CONTRIBUTING.md)
-[![Tools](https://img.shields.io/badge/Tools-58-brightgreen.svg)](#-工具一览58-工具15-个模块)
+[![Version](https://img.shields.io/badge/Version-2.1.0-purple.svg)](CONTRIBUTING.md)
+[![Tools](https://img.shields.io/badge/Tools-61-brightgreen.svg)](#-工具一览61-工具16-个模块)
 [![Tests](https://img.shields.io/badge/Tests-19%20passed-success.svg)](tests/)
 
 </div>
@@ -22,7 +22,8 @@
 ### 核心能力
 
 - **🧠 四层记忆系统** — 工作记忆 / 长期记忆 / 持久记忆 / 外部记忆（RAG），TF-IDF 中文检索，越用越懂你
-- **🔧 58 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析、批量重构、基准评测等
+- **🔧 61 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析、批量重构、基准评测、MCP 外部工具集成等
+- **🔌 MCP 协议集成** — 通过 Model Context Protocol 连接外部工具服务器（stdio/SSE），自动发现并注册外部工具；可作为 MCP 服务端暴露自身工具给 Claude Code / Cursor / VS Code（对标 Claude Code 工具扩展）
 - **🤖 多 Provider LLM 路由** — 支持 Ollama / OpenAI / Anthropic / DeepSeek，按任务复杂度自动路由到最优模型，失败时自动 fallback
 - **📊 基准评测框架** — 内置 12 道 HumanEval 风格编程题，pass@k 评分 + 业界分数对比（Claude Opus / GPT-4o / Gemini），自修复评测
 - **🔄 自我演化** — 任务反思 → 经验积累 → 策略进化 → 知识蒸馏 → AI 工具对比学习 → 失败恢复引擎 → 自训练模拟器 → 15 维评分系统
@@ -54,6 +55,7 @@
 | 自我演化记忆 | ✅ | ❌ | ❌ | ❌ | ❌ |
 | 元认知监控 | ✅ | ❌ | ❌ | ❌ | ❌ |
 | 失败恢复引擎 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| MCP 协议集成 | ✅ | ❌ | ❌ | ✅ | ❌ |
 | 本地优先 + 云端可选 | ✅ | ✅ | ❌ | ❌ | ❌ |
 
 ## 📋 架构概览
@@ -78,8 +80,8 @@
 │  └──────────────────┘ └────────────────┘ └──────────────────────┘  │
 ├───────────┬───────────┬───────────┬────────────────────────────────┤
 │  Tools    │  Memory   │   RAG     │   Evolution + Metacognition    │
-│  (57个    │  (4层)    │  Engine   │                                │
-│  15模块)  │           │           │                                │
+│  (61个    │  (4层)    │  Engine   │                                │
+│  16模块)  │           │           │                                │
 ├───────────┼───────────┼───────────┼────────────────────────────────┤
 │ file(9)   │ L1 working│ ChromaDB  │ 15维评分 · 策略进化            │
 │ command(4)│ L2 long   │  / JSON   │ 失败恢复引擎(8模式×3级)       │
@@ -95,6 +97,7 @@
 │ evolve(10)│           │           │                                │
 │ metacog(2)│           │           │                                │
 │benchmark3 │           │           │                                │
+│ mcp(3)    │           │           │                                │
 └───────────┴───────────┴───────────┴────────────────────────────────┘
          ↕                  ↕               ↕
     LLM Router          向量数据库      turing_data/
@@ -236,7 +239,7 @@ You > 帮我写一个快速排序算法
 10. **自训练模拟器** — 生成合成任务并自我训练，持续提升弱项
 11. **元认知监控** — 6 维认知雷达（计划质量 / 工具效率 / 错误恢复 / 创造性 / 专注度 / 综合），偏差检测与置信校准
 
-## 🔧 工具一览（58 工具，15 个模块）
+## 🔧 工具一览（61 工具，16 个模块）
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -298,6 +301,9 @@ You > 帮我写一个快速排序算法
 | **基准评测 (3)** | `run_benchmark` | HumanEval 风格代码生成评测（pass@k） |
 | | `eval_code` | 多维度代码质量评估（语法 + lint + 复杂度 + 安全） |
 | | `benchmark_trend` | 历史评测分数趋势追踪 |
+| **MCP 集成 (3)** | `mcp_list_servers` | 列出已配置的 MCP 服务器及连接状态 |
+| | `mcp_list_tools` | 发现已连接 MCP 服务器的外部工具 |
+| | `mcp_call_tool` | 调用外部 MCP 服务器工具（mcp::server::tool） |
 
 ## 🌐 Web UI
 
@@ -377,6 +383,18 @@ security:
   blocked_paths:              # 禁止访问的路径
     - "/etc/shadow"
     - "/etc/passwd"
+
+# MCP 协议集成（v2.1 新增）
+# mcp:
+#   servers:
+#     filesystem:
+#       transport: stdio
+#       command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+#     github:
+#       transport: sse
+#       url: http://localhost:3000/sse
+#       headers:
+#         Authorization: "Bearer ghp_xxx"
 ```
 
 ## 📦 依赖
@@ -407,7 +425,7 @@ security:
 | v0.9 | **失败恢复 + 自我训练**：失败恢复引擎（8 模式 × 3 级恢复策略）、自训练模拟器、恢复剧本构建、工具探索顾问（48 工具） | ✅ 已完成 |
 | v1.0 | **生产级完善**：持久化 Shell 会话（env/cwd 跨调用保持）、后台进程管理、文件管理（move/copy/delete/find）、原子化多文件编辑（multi_edit）、Token-aware 上下文管理、测试覆盖率 + 失败详情、自动项目索引（54 工具） | ✅ 已完成 |
 | v2.0 | **多模型 + 基准评测**：多 Provider LLM 路由（Ollama/OpenAI/Anthropic/DeepSeek）、按复杂度自动路由 + fallback、HumanEval 基准评测框架（12 题 + pass@k + 自修复）、业界分数对比、智能上下文收集（import 链 + 错误堆栈 + 符号引用）、多维代码质量评估（58 工具） | ✅ 已完成 |
-| v2.1 | MCP 协议集成（对标 Claude Code 工具扩展） | 📋 计划中 |
+| v2.1 | **MCP 协议集成**：MCP 客户端（stdio/SSE 双传输 + 自动工具发现注册）、MCP 服务端（暴露 61 工具给外部 AI 客户端）、多服务器管理（命名空间隔离）、3 个 MCP 管理工具（对标 Claude Code 工具扩展）（61 工具） | ✅ 已完成 |
 | v2.2 | 沙箱隔离（Docker 容器化代码执行） | 📋 计划中 |
 | v2.3 | 多模态支持（图片/截图/UML 理解） | 📋 计划中 |
 | v2.4 | IDE 插件（VS Code Extension） | 📋 计划中 |
