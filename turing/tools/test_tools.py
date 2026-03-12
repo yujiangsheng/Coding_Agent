@@ -250,7 +250,7 @@ def run_tests(
 
 @tool(
     name="generate_tests",
-    description="为指定的源代码文件生成测试用例框架。自动检测语言和框架，生成包含基本测试结构的测试文件。",
+    description="为指定的源代码文件生成测试用例。支持两种模式：模板模式（快速生成测试框架）和 LLM 智能模式（生成包含边界条件、异常路径的完整测试）。",
     parameters={
         "type": "object",
         "properties": {
@@ -266,6 +266,10 @@ def run_tests(
                 "type": "string",
                 "description": "要测试的函数名列表，逗号分隔（可选，默认全部公开函数）",
             },
+            "smart": {
+                "type": "boolean",
+                "description": "是否使用 LLM 智能生成测试（含边界条件和异常路径），默认 false",
+            },
         },
         "required": ["source_file"],
     },
@@ -274,6 +278,7 @@ def generate_tests(
     source_file: str,
     output_file: str = None,
     functions: str = None,
+    smart: bool = False,
 ) -> dict:
     """为源文件生成测试脚手架。"""
     p = Path(source_file)
@@ -318,6 +323,10 @@ def generate_tests(
             output_file = str(p.parent / f"{p.stem}.test{suffix}")
         else:
             output_file = str(p.parent / f"test_{p.name}")
+
+    # ===== LLM 智能测试生成（v3.1）=====
+    if smart:
+        return _generate_smart_tests(p, content, suffix, target_funcs, output_file)
 
     # 生成测试框架代码
     if suffix == ".py":
@@ -369,3 +378,189 @@ def generate_tests(
         "language": "python" if suffix == ".py" else "javascript",
         "hint": "已生成测试框架，请补充具体的测试逻辑和断言。",
     }
+
+
+def _generate_smart_tests(source_path: Path, content: str, suffix: str,
+                          target_funcs: list, output_file: str) -> dict:
+    """使用 LLM 智能生成包含边界条件和异常路径的测试（v3.1）"""
+    try:
+        from turing.llm.provider import create_provider
+        from turing.config import Config
+        cfg = Config.load()
+
+        # 从配置创建 provider
+        llm_cfg = cfg.get("llm", {})
+        default_name = llm_cfg.get("default", "ollama")
+        provider_cfg = llm_cfg.get("providers", {}).get(default_name, {})
+        provider_type = provider_cfg.pop("type", default_name)
+        provider = create_provider(provider_type, **provider_cfg)
+        provider_cfg["type"] = provider_type  # 恢复
+
+        # 限制源代码长度
+        src_snippet = content[:6000]
+        if len(content) > 6000:
+            src_snippet += "\n# ... (source truncated)"
+
+        lang = "Python" if suffix == ".py" else "JavaScript/TypeScript"
+        framework = "pytest" if suffix == ".py" else "jest"
+        funcs_str = ", ".join(target_funcs[:15])
+
+        prompt = f"""Generate comprehensive test code for the following {lang} source file.
+
+Functions to test: {funcs_str}
+
+Source code:
+```{suffix.lstrip('.')}
+{src_snippet}
+```
+
+Requirements:
+1. Use {framework} as the test framework
+2. Include tests for: normal cases, edge cases, boundary values, error/exception handling
+3. Use descriptive test names that explain WHAT is being tested
+4. Include docstrings/comments explaining test intent
+5. Mock external dependencies where appropriate
+6. Output ONLY the complete test file code, no explanations
+
+Output the test code directly, wrapped in a single code block."""
+
+        resp = provider.chat(
+            messages=[
+                {"role": "system", "content": f"You are a senior QA engineer. Generate production-quality {lang} tests."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+        )
+        generated = resp.get("content", "")
+
+        # 提取代码块
+        import re as _re
+        code_match = _re.search(r'```(?:\w+)?\n(.*?)```', generated, _re.DOTALL)
+        test_code = code_match.group(1) if code_match else generated
+
+        out_path = Path(output_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(test_code, encoding="utf-8")
+
+        return {
+            "status": "ok",
+            "mode": "smart_llm",
+            "test_file": str(out_path),
+            "functions_covered": target_funcs,
+            "function_count": len(target_funcs),
+            "language": "python" if suffix == ".py" else "javascript",
+            "hint": "已通过 LLM 智能生成完整测试（含边界条件和异常路径）。",
+        }
+    except Exception as e:
+        return {"error": f"LLM 智能测试生成失败: {e}", "hint": "可尝试不使用 smart=true 生成模板测试。"}
+
+
+# ────────────────── 测试覆盖率工具 ──────────────────
+
+
+@tool(
+    name="test_coverage",
+    description="运行测试并生成覆盖率报告。支持 pytest-cov（Python）和 Istanbul/c8（JS/TS）。"
+                "返回总覆盖率和低覆盖文件列表。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "项目路径（默认当前目录）",
+            },
+            "source_dir": {
+                "type": "string",
+                "description": "源代码目录（如 'src' 或 'turing'，用于 --cov 参数）",
+            },
+            "threshold": {
+                "type": "integer",
+                "description": "覆盖率阈值百分比（低于此值的文件会被标记，默认 80）",
+            },
+        },
+        "required": [],
+    },
+)
+def test_coverage(path: str = ".", source_dir: str = None, threshold: int = 80) -> dict:
+    """运行测试覆盖率分析。"""
+    import subprocess
+    import re as _re
+
+    p = Path(path).resolve()
+    framework = _detect_test_framework(str(p))
+
+    if framework == "pytest":
+        cov_target = source_dir or "."
+        cmd = ["python3", "-m", "pytest", "--tb=short", "-q",
+               f"--cov={cov_target}", "--cov-report=term-missing"]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120, cwd=str(p)
+            )
+        except subprocess.TimeoutExpired:
+            return {"error": "覆盖率测试超时（120s）"}
+        except FileNotFoundError:
+            return {"error": "pytest 或 pytest-cov 未安装"}
+
+        output = result.stdout + "\n" + result.stderr
+        # 解析覆盖率表格
+        # 格式: Name    Stmts   Miss  Cover   Missing
+        files_coverage = []
+        total_coverage = None
+        for line in output.split("\n"):
+            # 匹配文件行: turing/agent.py  500  100  80%  10-20, 30
+            m = _re.match(
+                r'^(\S+\.py)\s+(\d+)\s+(\d+)\s+(\d+)%\s*(.*)',
+                line.strip()
+            )
+            if m:
+                fname, stmts, miss, cover, missing = m.groups()
+                cover_int = int(cover)
+                entry = {
+                    "file": fname,
+                    "statements": int(stmts),
+                    "missing": int(miss),
+                    "coverage": cover_int,
+                }
+                if missing.strip():
+                    entry["missing_lines"] = missing.strip()
+                if cover_int < threshold:
+                    entry["below_threshold"] = True
+                files_coverage.append(entry)
+
+            # 匹配 TOTAL 行
+            m_total = _re.match(r'^TOTAL\s+(\d+)\s+(\d+)\s+(\d+)%', line.strip())
+            if m_total:
+                total_coverage = int(m_total.group(3))
+
+        below_threshold = [f for f in files_coverage if f.get("below_threshold")]
+
+        return {
+            "status": "ok",
+            "framework": "pytest-cov",
+            "total_coverage": total_coverage,
+            "threshold": threshold,
+            "files": files_coverage,
+            "below_threshold_count": len(below_threshold),
+            "below_threshold_files": [f["file"] for f in below_threshold],
+            "passed": total_coverage is not None and total_coverage >= threshold,
+            "raw_output": output[-2000:] if len(output) > 2000 else output,
+        }
+
+    elif framework in ("jest", "vitest"):
+        cmd = "npx jest --coverage" if framework == "jest" else "npx vitest run --coverage"
+        try:
+            result = subprocess.run(
+                cmd.split(), capture_output=True, text=True,
+                timeout=120, cwd=str(p)
+            )
+        except subprocess.TimeoutExpired:
+            return {"error": "覆盖率测试超时"}
+
+        return {
+            "status": "ok",
+            "framework": framework,
+            "raw_output": result.stdout[-3000:],
+        }
+
+    return {"error": f"不支持的测试框架或未检测到测试: {framework or 'none'}"}

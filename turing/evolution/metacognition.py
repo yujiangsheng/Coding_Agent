@@ -86,6 +86,16 @@ class MetacognitiveEngine:
         # 认知模式库：记录哪些认知模式在何种任务中有效
         self._cognitive_patterns: dict[str, list[dict]] = {}
 
+        # 竞争力意识（延迟初始化，避免循环导入）
+        self._competitive_intel: Any | None = None
+
+    def _get_competitive_intel(self):
+        """延迟加载竞争力分析引擎"""
+        if self._competitive_intel is None:
+            from turing.evolution.competitive import CompetitiveIntelligence
+            self._competitive_intel = CompetitiveIntelligence(self._data_dir)
+        return self._competitive_intel
+
     # ===== 任务生命周期 =====
 
     def begin_task(self, task_description: str, task_type: str = "general") -> dict:
@@ -114,7 +124,23 @@ class MetacognitiveEngine:
             "estimated_complexity": round(complexity, 3),
             "recommended_depth": self._current.reasoning_depth,
             "cognitive_advisory": self._generate_advisory(task_type, complexity),
+            "competitive_advisory": self._generate_competitive_advisory(task_type),
         }
+
+    def _generate_competitive_advisory(self, task_type: str) -> str:
+        """基于竞争力差距生成任务级别的对标建议"""
+        try:
+            intel = self._get_competitive_intel()
+            gaps = intel.get_task_relevant_gaps(task_type)
+            if not gaps:
+                return ""
+            top = gaps[0]
+            return (
+                f"竞争力提醒: 在 {top['name']} 维度上与 {top['best_competitor']} "
+                f"差距 {top['gap_to_best']:.0%}，建议强化该方面的策略"
+            )
+        except Exception:
+            return ""
 
     def checkpoint(self, event_type: str, details: dict) -> dict | None:
         """在关键决策点进行元认知检查
@@ -581,7 +607,16 @@ class MetacognitiveEngine:
             "composite_score": round(
                 sum(p.get("mean", 0) for p in profile.values()) / max(len(profile), 1), 2
             ) if profile else 0,
+            "competitive_awareness": self._get_competitive_awareness(),
         }
+
+    def _get_competitive_awareness(self) -> dict:
+        """获取竞争力意识数据，作为元认知画像的第 7 维度"""
+        try:
+            intel = self._get_competitive_intel()
+            return intel.get_competitive_awareness()
+        except Exception:
+            return {"status": "unavailable"}
 
     def get_evolution_recommendations(self) -> list[dict]:
         """基于元认知画像生成自我提升建议"""
@@ -639,6 +674,21 @@ class MetacognitiveEngine:
                 "priority": "low",
                 "advice": "元认知系统运行良好，继续积累数据",
             })
+
+        # 注入竞争力驱动的建议
+        try:
+            intel = self._get_competitive_intel()
+            insights = intel.get_evolution_insights()
+            for hint in insights.get("strategy_improvement_hints", [])[:2]:
+                recommendations.append({
+                    "area": f"competitive:{hint['dimension']}",
+                    "priority": "high" if hint.get("gap_severity") == "critical" else "medium",
+                    "advice": f"竞争力差距: {hint['lesson']}",
+                    "action": hint.get("action", ""),
+                    "source": "competitive_intelligence",
+                })
+        except Exception:
+            pass
 
         return recommendations
 

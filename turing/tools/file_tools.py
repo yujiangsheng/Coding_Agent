@@ -491,3 +491,163 @@ def find_files(pattern: str, path: str = None, max_results: int = 100) -> dict:
                     return {"files": matches, "count": len(matches), "truncated": True}
 
     return {"files": matches, "count": len(matches), "truncated": False}
+
+
+# ────────────────── 文件检查点系统 ──────────────────
+
+import hashlib
+import tempfile
+
+# 检查点存储目录
+_CHECKPOINT_DIR = Path(tempfile.gettempdir()) / "turing_checkpoints"
+
+
+@tool(
+    name="checkpoint_save",
+    description="在修改文件前保存快照（检查点），用于修改失败后快速回滚。"
+                "每个文件可保存多个检查点，按标签区分。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "要保存检查点的文件路径",
+            },
+            "label": {
+                "type": "string",
+                "description": "检查点标签（如 'before_refactor'），默认 'auto'",
+            },
+        },
+        "required": ["path"],
+    },
+)
+def checkpoint_save(path: str, label: str = "auto") -> dict:
+    """保存文件的检查点快照。"""
+    target = Path(path).resolve()
+    if not target.exists():
+        return {"error": f"文件不存在: {path}"}
+    if not target.is_file():
+        return {"error": f"只支持文件检查点，不支持目录: {path}"}
+
+    err = _check_path_security(str(target))
+    if err:
+        return {"error": err}
+
+    _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
+    content = target.read_bytes()
+    content_hash = hashlib.sha256(content).hexdigest()[:12]
+    # 用文件名 + 标签 + hash 作为检查点文件名
+    safe_name = target.name.replace("/", "_").replace("\\", "_")
+    cp_name = f"{safe_name}.{label}.{content_hash}.ckpt"
+    cp_path = _CHECKPOINT_DIR / cp_name
+
+    cp_path.write_bytes(content)
+
+    # 保存元信息
+    meta_path = cp_path.with_suffix(".meta")
+    import json as _json
+    import time as _time
+    meta = {
+        "original_path": str(target),
+        "label": label,
+        "timestamp": _time.time(),
+        "size": len(content),
+        "hash": content_hash,
+    }
+    meta_path.write_text(_json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
+    return {
+        "status": "ok",
+        "path": str(target),
+        "label": label,
+        "checkpoint": cp_name,
+        "size": len(content),
+        "hash": content_hash,
+    }
+
+
+@tool(
+    name="checkpoint_restore",
+    description="从检查点恢复文件内容（回滚到修改前的状态）。"
+                "可指定标签或列出所有可用检查点。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "要恢复的文件路径",
+            },
+            "label": {
+                "type": "string",
+                "description": "检查点标签（默认恢复最新的检查点）",
+            },
+            "list_only": {
+                "type": "boolean",
+                "description": "仅列出可用检查点，不执行恢复",
+            },
+        },
+        "required": ["path"],
+    },
+)
+def checkpoint_restore(path: str, label: str = None, list_only: bool = False) -> dict:
+    """从检查点恢复文件或列出可用检查点。"""
+    import json as _json
+
+    target = Path(path).resolve()
+    safe_name = target.name.replace("/", "_").replace("\\", "_")
+
+    if not _CHECKPOINT_DIR.exists():
+        return {"error": "没有任何检查点记录"}
+
+    # 查找该文件的所有检查点
+    checkpoints = []
+    for meta_file in sorted(_CHECKPOINT_DIR.glob(f"{safe_name}.*.meta"), reverse=True):
+        try:
+            meta = _json.loads(meta_file.read_text(encoding="utf-8"))
+            # 验证原始路径匹配
+            if Path(meta["original_path"]).resolve() == target:
+                cp_file = meta_file.with_suffix(".ckpt")
+                if cp_file.exists():
+                    checkpoints.append({**meta, "checkpoint_file": str(cp_file)})
+        except Exception:
+            continue
+
+    if not checkpoints:
+        return {"error": f"未找到文件 {path} 的检查点"}
+
+    if list_only:
+        return {
+            "path": str(target),
+            "checkpoints": [
+                {"label": c["label"], "timestamp": c["timestamp"],
+                 "size": c["size"], "hash": c["hash"]}
+                for c in checkpoints
+            ],
+            "count": len(checkpoints),
+        }
+
+    # 选择要恢复的检查点
+    selected = None
+    if label:
+        for c in checkpoints:
+            if c["label"] == label:
+                selected = c
+                break
+        if not selected:
+            return {"error": f"未找到标签为 '{label}' 的检查点",
+                    "available_labels": [c["label"] for c in checkpoints]}
+    else:
+        selected = checkpoints[0]  # 最新的
+
+    # 恢复文件
+    cp_content = Path(selected["checkpoint_file"]).read_bytes()
+    target.write_bytes(cp_content)
+
+    return {
+        "status": "ok",
+        "path": str(target),
+        "restored_from": selected["label"],
+        "restored_hash": selected["hash"],
+        "size": selected["size"],
+    }

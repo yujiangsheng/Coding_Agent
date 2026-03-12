@@ -239,3 +239,143 @@ def type_check(path: str = ".", strict: bool = False) -> dict:
     result["error_count"] = error_count
 
     return result
+
+
+# ────────────────── 安全扫描工具 ──────────────────
+
+
+@tool(
+    name="security_scan",
+    description="静态安全扫描：检查代码中的常见安全问题（SQL 注入、XSS、"
+                "硬编码密钥、不安全的 eval/exec、路径遍历等）。"
+                "优先使用 bandit（Python）或 semgrep，回退到内置正则扫描。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "要扫描的文件或目录路径",
+            },
+            "severity": {
+                "type": "string",
+                "description": "最低报告级别: low / medium / high（默认 medium）",
+                "enum": ["low", "medium", "high"],
+            },
+        },
+        "required": ["path"],
+    },
+)
+def security_scan(path: str, severity: str = "medium") -> dict:
+    """静态安全扫描。"""
+    import shutil
+    import re as _re
+
+    p = Path(path).resolve()
+    if not p.exists():
+        return {"error": f"路径不存在: {path}"}
+
+    # 优先使用 bandit（Python 安全扫描）
+    if shutil.which("bandit"):
+        sev_map = {"low": "l", "medium": "m", "high": "h"}
+        sev_flag = sev_map.get(severity, "m")
+        cmd = f"bandit -r -ll -{sev_flag} -f json {path}"
+        result = _run_quality_cmd(cmd, timeout=60)
+        if result.get("exit_code", 1) in (0, 1):
+            try:
+                import json as _json
+                data = _json.loads(result.get("output", "{}"))
+                issues = data.get("results", [])
+                return {
+                    "status": "ok",
+                    "scanner": "bandit",
+                    "issues_count": len(issues),
+                    "issues": [
+                        {
+                            "file": i.get("filename", ""),
+                            "line": i.get("line_number", 0),
+                            "severity": i.get("issue_severity", ""),
+                            "confidence": i.get("issue_confidence", ""),
+                            "issue": i.get("issue_text", ""),
+                            "cwe": i.get("issue_cwe", {}).get("id", ""),
+                        }
+                        for i in issues[:50]
+                    ],
+                }
+            except Exception:
+                pass
+
+    # 回退：内置正则安全检查
+    patterns = [
+        {"name": "hardcoded_secret", "severity": "high",
+         "pattern": r'''(?:password|secret|api_key|token)\s*=\s*['\"][^'"]{8,}['\"]''',
+         "description": "疑似硬编码密钥或密码"},
+        {"name": "eval_exec", "severity": "high",
+         "pattern": r'\b(?:eval|exec)\s*\(',
+         "description": "使用 eval/exec，可能导致代码注入"},
+        {"name": "sql_injection", "severity": "high",
+         "pattern": r'''(?:execute|cursor\.execute)\s*\(\s*(?:f['\"]|['\"].*%s|.*\.format\()''',
+         "description": "疑似 SQL 注入（字符串拼接 SQL）"},
+        {"name": "shell_injection", "severity": "high",
+         "pattern": r'subprocess\.\w+\(.*shell\s*=\s*True',
+         "description": "shell=True 可能导致命令注入"},
+        {"name": "path_traversal", "severity": "medium",
+         "pattern": r'\.\./|\.\.\\\\',
+         "description": "路径遍历模式"},
+        {"name": "insecure_hash", "severity": "medium",
+         "pattern": r'hashlib\.(?:md5|sha1)\(',
+         "description": "使用不安全的哈希算法（MD5/SHA1）"},
+        {"name": "debug_mode", "severity": "low",
+         "pattern": r'debug\s*=\s*True|DEBUG\s*=\s*True',
+         "description": "调试模式开启"},
+        {"name": "pickle_load", "severity": "medium",
+         "pattern": r'pickle\.loads?\(',
+         "description": "pickle 反序列化可能导致任意代码执行"},
+    ]
+
+    sev_order = {"low": 0, "medium": 1, "high": 2}
+    min_sev = sev_order.get(severity, 1)
+
+    findings = []
+    code_exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".java", ".rb"}
+
+    files_to_scan = []
+    if p.is_file():
+        files_to_scan = [p]
+    else:
+        skip = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+        for f in p.rglob("*"):
+            if any(part in skip for part in f.relative_to(p).parts):
+                continue
+            if f.is_file() and f.suffix in code_exts:
+                files_to_scan.append(f)
+            if len(files_to_scan) >= 200:
+                break
+
+    for fp in files_to_scan:
+        try:
+            content = fp.read_text(encoding="utf-8", errors="ignore")
+            for pat_info in patterns:
+                if sev_order.get(pat_info["severity"], 0) < min_sev:
+                    continue
+                for m in _re.finditer(pat_info["pattern"], content, _re.IGNORECASE):
+                    line_num = content[:m.start()].count("\n") + 1
+                    findings.append({
+                        "file": str(fp.relative_to(p) if p.is_dir() else fp.name),
+                        "line": line_num,
+                        "rule": pat_info["name"],
+                        "severity": pat_info["severity"],
+                        "description": pat_info["description"],
+                        "match": m.group()[:80],
+                    })
+        except Exception:
+            continue
+
+    return {
+        "status": "ok",
+        "scanner": "builtin_regex",
+        "path": str(p),
+        "files_scanned": len(files_to_scan),
+        "issues_count": len(findings),
+        "issues": findings[:50],
+        "severity_filter": severity,
+    }

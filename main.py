@@ -129,10 +129,17 @@ def process_chat(agent: TuringAgent, user_input: str):
             if "error" in result:
                 console.print(f"[red]   ✗ {result['error']}[/red]")
             else:
-                result_preview = json.dumps(result, ensure_ascii=False)
-                if len(result_preview) > 200:
-                    result_preview = result_preview[:200] + "..."
-                console.print(f"[green]   ✓[/green] [dim]{result_preview}[/dim]")
+                # 如果结果包含 diff 预览，高亮显示（对标 Claude Code / Aider）
+                diff_text = result.get("diff", "")
+                if diff_text:
+                    from rich.syntax import Syntax
+                    console.print(f"[green]   ✓[/green] {result.get('path', '')} ({result.get('replacements', 1)} edit)")
+                    console.print(Syntax(diff_text[:2000], "diff", theme="monokai", padding=1))
+                else:
+                    result_preview = json.dumps(result, ensure_ascii=False)
+                    if len(result_preview) > 200:
+                        result_preview = result_preview[:200] + "..."
+                    console.print(f"[green]   ✓[/green] [dim]{result_preview}[/dim]")
 
         elif etype == "text":
             console.print(Panel(
@@ -164,19 +171,21 @@ def handle_command(cmd: str, agent: TuringAgent) -> str | None:
     支持的命令:
       /help         — 显示命令帮助
       /status       — 显示记忆与演化统计面板
-      /memory <kw>  — 跨层搜索记忆 (working / long_term / persistent)
-      /strategies   — 列出已归纳的策略模板及其成功率
+      /memory <kw>  — 跨层搜索记忆
+      /strategies   — 列出已归纳的策略模板
       /evolution    — 显示最近 5 条进化日志
-      /index <path> — 将指定路径的项目索引到 RAG 知识库
+      /index <path> — 将项目索引到 RAG 知识库
+      /compact      — 压缩对话上下文（对标 Claude Code）
+      /cost         — 显示本次会话 Token 消耗统计
+      /diff         — 显示最近的文件编辑 diff
+      /undo         — 回滚最近一次 git commit（自动提交的检查点）
+      /config [key] — 查看当前配置
+      /clear        — 清空终端屏幕
+      /save         — 保存当前会话
+      /load <id>    — 加载历史会话
+      /sessions     — 列出历史会话
       /new          — 清空工作记忆，开始新会话
       /exit         — 退出 REPL
-
-    Args:
-        cmd: 完整的斜杠命令字符串（如 '/memory 快速排序'）
-        agent: TuringAgent 实例
-
-    Returns:
-        'exit' 表示应退出 REPL，None 表示继续
     """
     parts = cmd.split(maxsplit=1)
     command = parts[0].lower()
@@ -197,6 +206,15 @@ def handle_command(cmd: str, agent: TuringAgent) -> str | None:
         help_table.add_row("/strategies", "列出已学会的策略")
         help_table.add_row("/evolution", "显示演化日志")
         help_table.add_row("/index <path>", "索引项目到 RAG 知识库")
+        help_table.add_row("/compact", "压缩对话上下文（释放空间）")
+        help_table.add_row("/cost", "显示 Token 消耗统计")
+        help_table.add_row("/diff", "显示最近的文件编辑 diff")
+        help_table.add_row("/undo", "回滚最近一次 git 自动提交")
+        help_table.add_row("/config [key]", "查看配置项")
+        help_table.add_row("/clear", "清空终端屏幕")
+        help_table.add_row("/save", "保存当前会话")
+        help_table.add_row("/load <id>", "加载历史会话")
+        help_table.add_row("/sessions", "列出历史会话")
         help_table.add_row("/new", "开始新会话（清空工作记忆）")
         help_table.add_row("/exit", "退出")
         console.print(help_table)
@@ -267,6 +285,132 @@ def handle_command(cmd: str, agent: TuringAgent) -> str | None:
         agent.start_session()
         console.print("[dim]已开始新会话，工作记忆已清空。[/dim]")
 
+    elif command == "/compact":
+        result = agent.compact()
+        if result.get("status") == "ok":
+            console.print(
+                f"[green]上下文已压缩[/green]: "
+                f"{result['messages_before']} → {result['messages_after']} 条消息, "
+                f"压缩率 {result['compression_ratio']}"
+            )
+        else:
+            console.print(f"[dim]{result.get('reason', '无需压缩')}[/dim]")
+
+    elif command == "/cost":
+        stats = agent.get_token_stats()
+        table = Table(title="Token 消耗统计", show_header=True)
+        table.add_column("指标", style="cyan")
+        table.add_column("值", style="green")
+        table.add_row("LLM 调用次数", str(stats.get("llm_calls", 0)))
+        table.add_row("输入 Tokens", f"{stats.get('total_input_tokens', 0):,}")
+        table.add_row("输出 Tokens", f"{stats.get('total_output_tokens', 0):,}")
+        total = stats.get("total_input_tokens", 0) + stats.get("total_output_tokens", 0)
+        table.add_row("总计 Tokens", f"{total:,}")
+        budget = agent.config.get("model.token_budget")
+        if budget:
+            pct = total / budget * 100
+            table.add_row("预算使用", f"{pct:.1f}% ({total:,}/{budget:,})")
+        console.print(table)
+
+    elif command == "/diff":
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["git", "diff", "HEAD~1", "--stat"], capture_output=True, text=True, timeout=10,
+                cwd=agent.config.get("security.workspace_root", "."),
+            )
+            if result.stdout.strip():
+                console.print(Panel(result.stdout.strip(), title="最近变更", border_style="yellow"))
+                # 显示详细 diff
+                detail = subprocess.run(
+                    ["git", "diff", "HEAD~1"], capture_output=True, text=True, timeout=10,
+                    cwd=agent.config.get("security.workspace_root", "."),
+                )
+                if detail.stdout.strip():
+                    diff_text = detail.stdout.strip()
+                    if len(diff_text) > 3000:
+                        diff_text = diff_text[:3000] + "\n... (truncated)"
+                    from rich.syntax import Syntax
+                    console.print(Syntax(diff_text, "diff", theme="monokai"))
+            else:
+                console.print("[dim]无最近变更[/dim]")
+        except Exception:
+            console.print("[dim]无法获取 diff（可能不在 git 仓库中）[/dim]")
+
+    elif command == "/undo":
+        import subprocess
+        try:
+            # 检查最近一次提交是否是自动检查点
+            log_result = subprocess.run(
+                ["git", "log", "--oneline", "-1"], capture_output=True, text=True, timeout=5,
+                cwd=agent.config.get("security.workspace_root", "."),
+            )
+            last_commit = log_result.stdout.strip()
+            if "turing-checkpoint" in last_commit.lower() or "auto-commit" in last_commit.lower():
+                console.print(f"[yellow]即将回滚: {last_commit}[/yellow]")
+                try:
+                    confirm = console.input("[yellow]确认回滚? [y/N]: [/yellow]").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    confirm = "n"
+                if confirm in ("y", "yes"):
+                    subprocess.run(
+                        ["git", "reset", "--soft", "HEAD~1"], timeout=5,
+                        cwd=agent.config.get("security.workspace_root", "."),
+                    )
+                    console.print("[green]已回滚最近一次自动提交[/green]")
+                else:
+                    console.print("[dim]已取消[/dim]")
+            else:
+                console.print(f"[dim]最近提交不是自动检查点: {last_commit}[/dim]")
+        except Exception:
+            console.print("[dim]无法执行 undo（可能不在 git 仓库中）[/dim]")
+
+    elif command == "/config":
+        if arg:
+            val = agent.config.get(arg)
+            if val is not None:
+                console.print(f"[cyan]{arg}[/cyan] = [green]{val}[/green]")
+            else:
+                console.print(f"[dim]配置项 '{arg}' 不存在[/dim]")
+        else:
+            console.print(Panel(
+                json.dumps(agent.config._data, ensure_ascii=False, indent=2),
+                title="当前配置", border_style="cyan",
+            ))
+
+    elif command == "/clear":
+        console.clear()
+
+    elif command == "/save":
+        sid = agent.save_conversation()
+        console.print(f"[green]会话已保存: {sid}[/green]")
+
+    elif command == "/load":
+        if not arg:
+            console.print("[yellow]用法: /load <session_id>[/yellow]")
+        else:
+            if agent.load_conversation(arg):
+                console.print(f"[green]会话 {arg} 已恢复[/green]")
+            else:
+                console.print(f"[red]会话 {arg} 未找到[/red]")
+
+    elif command == "/sessions":
+        sessions = agent.list_conversations()
+        if sessions:
+            table = Table(title="历史会话", show_header=True)
+            table.add_column("ID", style="cyan")
+            table.add_column("消息数")
+            table.add_column("摘要")
+            for s in sessions[:10]:
+                table.add_row(
+                    s["session_id"],
+                    str(s["message_count"]),
+                    s.get("first_message", "")[:60],
+                )
+            console.print(table)
+        else:
+            console.print("[dim]暂无历史会话[/dim]")
+
     else:
         console.print(f"[yellow]未知命令: {command}。输入 /help 查看可用命令。[/yellow]")
 
@@ -293,6 +437,16 @@ def main():
         default=None,
         help="单次执行模式：直接处理指定任务后退出",
     )
+    parser.add_argument(
+        "--continue", dest="continue_session",
+        action="store_true",
+        help="恢复最近一次会话（对标 Claude Code --continue）",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="恢复指定 session_id 的会话（对标 Claude Code --resume）",
+    )
     args = parser.parse_args()
 
     # 加载配置
@@ -310,6 +464,25 @@ def main():
         # 单次执行模式
         agent.start_session()
         process_chat(agent, args.one_shot)
+    elif args.continue_session or args.resume:
+        # 会话恢复模式（对标 Claude Code --continue / --resume）
+        agent.start_session()
+        restored = False
+        if args.resume:
+            restored = agent.load_conversation(args.resume)
+            if not restored:
+                console.print(f"[red]会话 {args.resume} 未找到[/red]")
+        else:
+            # --continue: 恢复最近一次会话
+            sessions = agent.list_conversations()
+            if sessions:
+                restored = agent.load_conversation(sessions[0]["session_id"])
+
+        if restored:
+            console.print(f"[green]已恢复会话: {agent._session_id}[/green]")
+        else:
+            console.print("[dim]未找到可恢复的会话，开始新会话[/dim]")
+        run_repl(agent)
     else:
         # 交互式 REPL
         run_repl(agent)

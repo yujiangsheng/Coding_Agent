@@ -48,6 +48,28 @@ def rag_search(query: str, source: str = "docs", top_k: int = 5) -> dict:
 
 
 @tool(
+    name="rag_remove_file",
+    description="从 RAG 索引中删除指定文件的所有分块。当文件被删除或需要重建索引时使用。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "filepath": {"type": "string", "description": "要从索引中移除的文件路径"},
+            "source": {
+                "type": "string",
+                "description": "文档源 (docs/codebase/experience_db)，默认 docs",
+            },
+        },
+        "required": ["filepath"],
+    },
+)
+def rag_remove_file(filepath: str, source: str = "docs") -> dict:
+    """从 RAG 索引中移除指定文件。"""
+    if _rag_engine is None:
+        return {"error": "RAG 引擎未初始化"}
+    return _rag_engine.remove_file_from_index(filepath, source)
+
+
+@tool(
     name="web_search",
     description="通过搜索引擎查找外部信息（文档、最佳实践、API 参考等）。",
     parameters={

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from turing.benchmark.datasets import BenchmarkDataset, HumanEvalTask
+from turing.benchmark.datasets import BenchmarkDataset, HumanEvalTask, SWEBenchTask
 from turing.benchmark.evaluator import BenchmarkScorer, CodeEvaluator
 
 logger = logging.getLogger(__name__)
@@ -329,3 +329,137 @@ class BenchmarkRunner:
                 )
 
         return "\n".join(lines)
+
+    # ===== SWE-bench 评测 =====
+
+    def run_swebench(
+        self,
+        tasks: list[SWEBenchTask] | None = None,
+        max_tasks: int | None = None,
+    ) -> dict:
+        """运行 SWE-bench 风格评测（仓库级代码修改 + 回归测试）。
+
+        Args:
+            tasks: SWE-bench 任务列表（None 则使用内置示例）
+            max_tasks: 限制评测任务数
+
+        Returns:
+            {"resolve_rate": float, "results": [...], "duration": float}
+        """
+        if tasks is None:
+            tasks = self._get_builtin_swebench_tasks()
+        if max_tasks:
+            tasks = tasks[:max_tasks]
+
+        results = []
+        start_time = time.time()
+
+        for task in tasks:
+            task_result = self._run_single_swebench(task)
+            results.append(task_result)
+            logger.info(
+                f"[{task.task_id}] {'✓' if task_result['resolved'] else '✗'} "
+                f"({task_result.get('duration', 0):.1f}s)"
+            )
+
+        duration = time.time() - start_time
+        resolved = sum(1 for r in results if r.get("resolved"))
+
+        report = {
+            "total": len(results),
+            "resolved": resolved,
+            "resolve_rate": round(resolved / max(len(results), 1), 4),
+            "duration": round(duration, 1),
+            "results": results,
+        }
+
+        self.dataset.save_results("swebench", results)
+        return report
+
+    def _run_single_swebench(self, task: SWEBenchTask) -> dict:
+        """执行单个 SWE-bench 任务"""
+        import subprocess
+
+        task_start = time.time()
+        result = {
+            "task_id": task.task_id,
+            "resolved": False,
+            "description": task.description[:200],
+        }
+
+        repo_path = Path(task.repo_path)
+        if not repo_path.is_dir():
+            result["error"] = f"仓库路径不存在: {task.repo_path}"
+            result["duration"] = round(time.time() - task_start, 2)
+            return result
+
+        # 1. 切换到基准 commit
+        try:
+            subprocess.run(
+                ["git", "checkout", task.base_commit],
+                cwd=str(repo_path), capture_output=True, timeout=30,
+            )
+        except Exception as e:
+            result["error"] = f"切换 commit 失败: {e}"
+            result["duration"] = round(time.time() - task_start, 2)
+            return result
+
+        # 2. 应用测试补丁
+        if task.test_patch:
+            try:
+                proc = subprocess.run(
+                    ["git", "apply", "--check", "-"],
+                    input=task.test_patch.encode(),
+                    cwd=str(repo_path), capture_output=True, timeout=15,
+                )
+                if proc.returncode == 0:
+                    subprocess.run(
+                        ["git", "apply", "-"],
+                        input=task.test_patch.encode(),
+                        cwd=str(repo_path), capture_output=True, timeout=15,
+                    )
+            except Exception:
+                pass
+
+        # 3. 使用 Agent 生成修复
+        if self.agent is None:
+            result["error"] = "Agent 未配置"
+            result["duration"] = round(time.time() - task_start, 2)
+            return result
+
+        try:
+            prompt = (
+                f"请修复以下问题。仓库路径: {task.repo_path}\n\n"
+                f"问题描述:\n{task.description}\n\n"
+                f"请直接修改相关文件来修复问题。"
+            )
+            # 运行 Agent
+            for event in self.agent.chat(prompt):
+                pass  # 消费所有事件
+        except Exception as e:
+            result["error"] = f"Agent 执行失败: {e}"
+            result["duration"] = round(time.time() - task_start, 2)
+            return result
+
+        # 4. 运行测试验证
+        try:
+            proc = subprocess.run(
+                task.test_cmd.split(),
+                cwd=str(repo_path),
+                capture_output=True, timeout=120,
+                text=True,
+            )
+            result["test_output"] = proc.stdout[-2000:] if proc.stdout else ""
+            result["test_returncode"] = proc.returncode
+            result["resolved"] = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            result["error"] = "测试超时"
+        except Exception as e:
+            result["error"] = f"测试执行失败: {e}"
+
+        result["duration"] = round(time.time() - task_start, 2)
+        return result
+
+    def _get_builtin_swebench_tasks(self) -> list[SWEBenchTask]:
+        """内置的 SWE-bench 示例任务（需要本地仓库）"""
+        return []  # 需要用户提供具体仓库路径和任务定义

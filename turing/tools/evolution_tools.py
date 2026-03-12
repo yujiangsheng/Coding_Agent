@@ -214,3 +214,139 @@ def build_recovery_playbook() -> dict:
     if _evolution_tracker is None:
         return {"error": "演化系统未初始化"}
     return _evolution_tracker.build_recovery_playbook()
+
+
+@tool(
+    name="competitive_benchmark",
+    description="竞争力对标分析 — 全面对比 Turing 与 Claude Code / Cursor / Copilot / Devin / Aider / Codex CLI / Windsurf 在 16 个能力维度上的表现，"
+                "生成能力矩阵、差距排名、优势识别和改进路线图。结果自动注入元认知和策略进化系统。",
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+)
+def competitive_benchmark() -> dict:
+    """执行全面竞争力对标分析。"""
+    from turing.evolution.competitive import CompetitiveIntelligence
+    data_dir = "turing_data"
+    if _evolution_tracker is not None:
+        data_dir = getattr(_evolution_tracker, "_data_dir", "turing_data")
+    ci = CompetitiveIntelligence(data_dir)
+    return ci.analyze()
+
+
+# ────────────────── 假设验证工具 ──────────────────
+
+
+@tool(
+    name="verify_hypothesis",
+    description="结构化假设验证 — 当面对复杂问题时，先提出假设再系统性验证。"
+                "支持自动执行验证命令、对比预期与实际结果、记录验证链。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "hypothesis": {
+                "type": "string",
+                "description": "待验证的假设（如 '数据库连接池耗尽导致超时'）",
+            },
+            "verification_cmd": {
+                "type": "string",
+                "description": "验证命令（如 'grep timeout logs/*.log'）",
+            },
+            "expected_result": {
+                "type": "string",
+                "description": "预期结果描述（如 '应该能找到 timeout 日志'）",
+            },
+            "evidence": {
+                "type": "string",
+                "description": "支持或反驳假设的已有证据（可选）",
+            },
+        },
+        "required": ["hypothesis"],
+    },
+)
+def verify_hypothesis(
+    hypothesis: str,
+    verification_cmd: str = "",
+    expected_result: str = "",
+    evidence: str = "",
+) -> dict:
+    """结构化假设验证。"""
+    import subprocess
+    import time
+
+    result = {
+        "hypothesis": hypothesis,
+        "timestamp": time.time(),
+        "verification_steps": [],
+    }
+
+    # 如果有验证命令，执行它
+    if verification_cmd:
+        # 安全检查：拒绝危险命令
+        dangerous = ["rm ", "rm -", "sudo", "mkfs", "dd if=", "> /dev"]
+        if any(d in verification_cmd.lower() for d in dangerous):
+            return {"error": "验证命令包含危险操作，已拒绝执行"}
+
+        try:
+            proc = subprocess.run(
+                verification_cmd, shell=False if " " not in verification_cmd
+                else True,  # noqa: S603
+                capture_output=True, text=True, timeout=30,
+                cwd="."
+            )
+            cmd_output = proc.stdout[-2000:] if len(proc.stdout) > 2000 else proc.stdout
+            cmd_error = proc.stderr[-500:] if proc.stderr else ""
+
+            step = {
+                "action": "execute_cmd",
+                "command": verification_cmd,
+                "exit_code": proc.returncode,
+                "output": cmd_output,
+            }
+            if cmd_error:
+                step["stderr"] = cmd_error
+            result["verification_steps"].append(step)
+
+            # 简单判断：命令成功执行且有输出 → 可能支持假设
+            if proc.returncode == 0 and proc.stdout.strip():
+                result["cmd_supports_hypothesis"] = True
+            else:
+                result["cmd_supports_hypothesis"] = False
+
+        except subprocess.TimeoutExpired:
+            result["verification_steps"].append({
+                "action": "execute_cmd",
+                "command": verification_cmd,
+                "error": "命令超时",
+            })
+        except Exception as e:
+            result["verification_steps"].append({
+                "action": "execute_cmd",
+                "command": verification_cmd,
+                "error": str(e),
+            })
+
+    # 证据分析
+    if evidence:
+        result["evidence"] = evidence
+        result["verification_steps"].append({
+            "action": "evidence_review",
+            "evidence": evidence[:500],
+        })
+
+    if expected_result:
+        result["expected_result"] = expected_result
+
+    # 生成验证建议
+    suggestions = []
+    if not verification_cmd:
+        suggestions.append("建议提供验证命令以自动验证假设")
+    if not evidence:
+        suggestions.append("建议收集更多证据（日志、堆栈、配置等）")
+    suggestions.append("如果假设被否定，考虑提出新的假设并重复验证")
+    suggestions.append("记录验证过程到记忆系统（memory_write），避免重复排查")
+    result["next_steps"] = suggestions
+
+    return result

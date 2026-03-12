@@ -320,3 +320,123 @@ def stop_background(pid: int) -> dict:
             proc.wait(timeout=2)
         del _bg_processes[pid]
     return {"status": "ok", "pid": pid, "message": "后台进程已终止"}
+
+
+# ────────────────── 自动修复工具 ──────────────────
+
+
+@tool(
+    name="auto_fix",
+    description="自动检测并修复代码文件中的常见问题：运行 lint、收集错误、"
+                "然后尝试自动修复（使用 ruff --fix / eslint --fix 等）。"
+                "返回修复前后的差异。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "要修复的文件或目录路径",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "仅检测不修复（默认 false）",
+            },
+        },
+        "required": ["path"],
+    },
+)
+def auto_fix(path: str, dry_run: bool = False) -> dict:
+    """自动检测并修复代码问题。"""
+    import shutil
+    from pathlib import Path
+
+    p = Path(path).resolve()
+    if not p.exists():
+        return {"error": f"路径不存在: {path}"}
+
+    results = {"fixes": [], "errors_before": 0, "errors_after": 0}
+
+    # Python: ruff
+    is_python = p.suffix == ".py" or (p.is_dir() and any(p.rglob("*.py")))
+    if is_python and shutil.which("ruff"):
+        # Step 1: 检测当前问题数
+        check_cmd = ["ruff", "check", "--output-format=text", str(p)]
+        try:
+            before = subprocess.run(
+                check_cmd, capture_output=True, text=True, timeout=30
+            )
+            before_lines = [l for l in before.stdout.strip().split("\n") if l.strip()]
+            results["errors_before"] = len(before_lines)
+            results["sample_errors"] = before_lines[:10]
+        except Exception as e:
+            return {"error": f"ruff check 失败: {e}"}
+
+        if dry_run:
+            return {
+                "status": "dry_run",
+                "tool": "ruff",
+                "errors_found": results["errors_before"],
+                "sample_errors": results.get("sample_errors", []),
+            }
+
+        # Step 2: 自动修复
+        fix_cmd = ["ruff", "check", "--fix", str(p)]
+        try:
+            subprocess.run(fix_cmd, capture_output=True, text=True, timeout=30)
+        except Exception as e:
+            return {"error": f"ruff fix 失败: {e}"}
+
+        # Step 3: format
+        if shutil.which("ruff"):
+            fmt_cmd = ["ruff", "format", str(p)]
+            try:
+                subprocess.run(fmt_cmd, capture_output=True, text=True, timeout=30)
+            except Exception:
+                pass
+
+        # Step 4: 重新检测
+        try:
+            after = subprocess.run(
+                check_cmd, capture_output=True, text=True, timeout=30
+            )
+            after_lines = [l for l in after.stdout.strip().split("\n") if l.strip()]
+            results["errors_after"] = len(after_lines)
+        except Exception:
+            results["errors_after"] = -1
+
+        fixed_count = max(0, results["errors_before"] - results["errors_after"])
+        results["fixes"].append({
+            "tool": "ruff",
+            "fixed": fixed_count,
+            "remaining": results["errors_after"],
+        })
+
+        return {
+            "status": "ok",
+            "tool": "ruff",
+            "errors_before": results["errors_before"],
+            "errors_after": results["errors_after"],
+            "fixed": fixed_count,
+            "remaining_errors": after_lines[:10] if results["errors_after"] > 0 else [],
+        }
+
+    # JavaScript/TypeScript: eslint
+    is_js = p.suffix in (".js", ".ts", ".jsx", ".tsx") or (
+        p.is_dir() and ((p / "package.json").exists() or any(p.rglob("*.js")))
+    )
+    if is_js and shutil.which("npx"):
+        action = "--fix" if not dry_run else ""
+        cmd = f"npx eslint {action} {path}".strip()
+        try:
+            result = subprocess.run(
+                cmd.split(), capture_output=True, text=True, timeout=60
+            )
+            return {
+                "status": "ok" if not dry_run else "dry_run",
+                "tool": "eslint",
+                "output": result.stdout[-2000:],
+            }
+        except Exception as e:
+            return {"error": f"eslint 失败: {e}"}
+
+    return {"error": "未找到可用的自动修复工具（需要 ruff 或 eslint）"}

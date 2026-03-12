@@ -1,6 +1,6 @@
 # 系统架构设计文档
 
-> Turing v2.1 — 自进化编程智能体
+> Turing v3.5 — 自进化编程智能体
 
 ## 1. 总体架构
 
@@ -14,13 +14,13 @@ Turing 采用分层架构设计，每层职责清晰、松耦合：
 │                       核心层 (Core)                                  │
 │                    agent.py — TuringAgent                            │
 │  10 阶段执行流水线 · CoT 推理 · ETF 验证 · 元认知 · 并行执行       │
-│  持久化 Shell · Token-aware 上下文管理 · 自动项目索引               │
-├──────────┬───────────┬───────────┬───────────────────────────────────┤
+│  持久化 Shell · Token-aware 上下文管理 · 自动项目索引 · LSP       │
+├──────────┬───────────┬───────────┬─────────────────────────────────┤
 │  工具引擎 │   记忆系统 │   RAG 引擎│   演化系统 + 元认知引擎          │
-├──────────┼───────────┼───────────┼───────────────────────────────────┤
-│  16 模块  │   4 层     │  ChromaDB │  15 维评分 · 策略进化 · 失败恢复 │
-│  61 工具  │   TF-IDF   │  + JSON   │  自训练模拟器 · 6 维认知雷达     │
-│  21 并行  │   跨层排序 │  查询扩展 │  经验合成 · 知识迁移             │
+├──────────┼───────────┼───────────┼─────────────────────────────────┤
+│  19 模块  │   4 层     │  ChromaDB │  15 维评分 · 策略进化 · 失败恢复 │
+│  80 工具  │   TF-IDF   │  + JSON   │  自训练模拟器 · 6 维认知雷达     │
+│  21 并行  │   跨层排序 │  查询扩展 │  经验合成 · 知识迁移 · 竞争力   │
 └──────────┴───────────┴───────────┴─────────────────────────────────┘
          ↕                  ↕               ↕
      LLM Router          向量数据库      turing_data/
@@ -91,29 +91,32 @@ def my_tool(arg1: str) -> dict:
 - 自动生成 Ollama function calling schema（`get_ollama_tool_schemas()`）
 - `execute_tool()` 通过 `inspect.signature()` 自动过滤多余参数
 
-**16 个工具模块（61 工具）：**
+**19 个工具模块（80 工具）：**
 
 | 模块 | 工具数 | 说明 |
 |------|--------|------|
 | `file_tools.py` | 9 | 文件 CRUD + diff 预览 + 原子化多文件编辑 + 文件管理 |
-| `command_tools.py` | 4 | 持久化 Shell（env/cwd 保持）+ 后台进程管理 |
-| `search_tools.py` | 4 | 代码搜索 + 目录列表 + Repo Map + 智能上下文收集 |
+| `command_tools.py` | 5 | 持久化 Shell（env/cwd 保持）+ 后台进程管理 + 自动修复 |
+| `search_tools.py` | 6 | 代码搜索 + 目录列表 + Repo Map + 智能上下文收集 + 上下文预算/压缩 |
 | `git_tools.py` | 8 | 完整 Git 工作流（status/diff/log/blame/add/commit/branch/stash） |
 | `test_tools.py` | 2 | 测试运行（覆盖率 + 失败详情提取）+ 测试生成 |
 | `quality_tools.py` | 3 | Lint + Format + TypeCheck（多工具自适应） |
 | `refactor_tools.py` | 3 | 批量编辑 + 符号重命名 + 影响分析 |
 | `project_tools.py` | 2 | 项目检测 + 依赖分析 |
-| `ast_tools.py` | 3 | 代码结构 + 调用图 + 复杂度（Python AST） |
+| `ast_tools.py` | 4 | 代码结构 + 调用图 + 复杂度 + 依赖图（Python AST） |
 | `memory_tools.py` | 3 | 记忆读写 + 反思 |
 | `external_tools.py` | 2 | RAG 检索 + Web 搜索 |
-| `evolution_tools.py` | 10 | 策略进化 + 蒸馏 + AI学习 + 失败恢复 + 自训练 + 探索 |
+| `evolution_tools.py` | 12 | 策略进化 + 蒸馏 + AI学习 + 失败恢复 + 自训练 + 探索 + 竞争力分析 + 假设验证 |
 | `benchmark_tools.py` | 3 | HumanEval 评测 + 代码质量评估 + 评测趋势 |
 | `mcp_tools.py` | 3 | MCP 服务器管理 + 外部工具发现 + 外部工具调用 |
+| `metacognition_tools.py` | 2 | 元认知反思 + checkpoint 管理 |
+| `agent_tools.py` | 1 | 任务分解与计划 |
+| `github_tools.py` | 5 | PR 摘要 + Issue 分析 + 安全扫描 + 代码审查 + 变更日志 |
 | `registry.py` | — | 注册表 + Schema 生成 + 安全调度 |
 
 **并行执行策略：**
 
-21 个只读工具可通过 `ThreadPoolExecutor` 安全并行执行：
+25 个只读工具可通过 `ThreadPoolExecutor` 安全并行执行：
 ```python
 _READONLY_TOOLS = {
     "read_file", "search_code", "list_directory", "repo_map",
@@ -124,6 +127,8 @@ _READONLY_TOOLS = {
     "complexity_report", "gap_analysis", "find_files",
     "check_background", "smart_context",
     "mcp_list_servers", "mcp_list_tools",
+    "context_budget", "dependency_graph",
+    "competitive_benchmark", "verify_hypothesis",
 }
 ```
 
@@ -138,6 +143,20 @@ _READONLY_TOOLS = {
 | `run_benchmark` | HumanEval 风格基准评测，pass@k 指标 + 业界分数横向对比 |
 | `eval_code` | 多维代码质量评估（语法 + lint + 圈复杂度 + 安全模式） |
 | `benchmark_trend` | 历史评测分数趋势追踪，量化能力进化 |
+
+**v3.4/v3.5 新增工具亮点：**
+
+| 工具 | 特性 |
+|------|------|
+| `competitive_benchmark` | 多维竞争力自评，对标 8 大主流 Agent，输出排名 + 差距分析 |
+| `verify_hypothesis` | 假设验证引擎，结构化假设→证据→结论工作流 |
+| `context_compress` | 上下文压缩，超出 token 预算时自动精简无关信息 |
+| `context_budget` | 上下文预算管理，跟踪剩余 token + 成本预估 |
+| `dependency_graph` | 模块依赖图分析，可视化 import 关系 + 循环检测 |
+| `auto_fix` | 自动修复 lint 错误和常见代码问题 |
+| `task_plan` | 任务分解与计划，将复杂需求拆解为可执行步骤 |
+| `security_scan` | 安全漏洞扫描，检测常见安全问题 |
+| `pr_summary` | PR 变更摘要自动生成 |
 
 **v1.0.0 新增工具亮点：**
 
@@ -547,7 +566,7 @@ Coding_Agent/
 │   ├── __init__.py                 # 版本号 + 架构说明
 │   ├── agent.py                    # TuringAgent（10 阶段主循环）
 │   ├── config.py                   # Config 单例（YAML 加载 + 点路径访问）
-│   ├── prompt.py                   # SYSTEM_PROMPT（49 项能力声明）
+│   ├── prompt.py                   # SYSTEM_PROMPT（28 项能力声明 + 21 专题段落）
 │   ├── llm/                        # 多 Provider LLM 路由层
 │   │   ├── __init__.py              # 包入口 + 导出
 │   │   ├── provider.py              # LLMProvider ABC + 4 实现
@@ -571,28 +590,36 @@ Coding_Agent/
 │   │   └── engine.py               # RAG 引擎（查询扩展 + 代码分块）
 │   ├── evolution/
 │   │   ├── tracker.py              # EvolutionTracker（15 维 + 策略 + 失败恢复 + 自训练）
-│   │   └── metacognition.py        # MetacognitiveEngine（6 维认知雷达）
-│   └── tools/                      # 61 个工具
+│   │   ├── metacognition.py        # MetacognitiveEngine（6维认知雷达）
+│   │   └── competitive.py          # CompetitiveIntelligence（16维×7竞品对标）
+│   ├── lsp/                        # LSP 代码补全服务器
+│   │   ├── __init__.py              # 包入口
+│   │   ├── server.py                # LSP 服务器（JSON-RPC/stdio + AST 补全）
+│   │   └── __main__.py              # python -m turing.lsp 入口
+│   └── tools/                      # 80 个工具
 │       ├── registry.py             # 工具注册表 + Schema 生成 + 安全调度
 │       ├── file_tools.py           # 文件操作 (9)
-│       ├── command_tools.py        # 命令执行 (4)
-│       ├── search_tools.py         # 代码搜索 + 智能上下文 (4)
+│       ├── command_tools.py        # 命令执行 (5): Shell + 后台进程 + auto_fix
+│       ├── search_tools.py         # 代码搜索 + 智能上下文 + 上下文压缩 (6)
 │       ├── git_tools.py            # Git 操作 (8)
 │       ├── test_tools.py           # 测试 (2)
 │       ├── quality_tools.py        # 质量 (3)
 │       ├── refactor_tools.py       # 重构 (3)
 │       ├── project_tools.py        # 项目 (2)
-│       ├── ast_tools.py            # AST (3)
+│       ├── ast_tools.py            # AST (4): 代码结构 + 调用图 + 复杂度 + 依赖图
 │       ├── memory_tools.py         # 记忆 (3)
 │       ├── external_tools.py       # 外部 (2)
-│       ├── evolution_tools.py      # 演化 (10)
+│       ├── evolution_tools.py      # 演化 (12): 含竞争力分析 + 假设验证
+│       ├── metacognition_tools.py  # 元认知 (2)
 │       ├── benchmark_tools.py      # 基准评测 (3)
-│       └── mcp_tools.py            # MCP 集成 (3)
+│       ├── mcp_tools.py            # MCP 集成 (3)
+│       ├── agent_tools.py          # 子 Agent (1)
+│       └── github_tools.py         # GitHub API (5)
 ├── web/                            # Web UI
 │   ├── server.py                   # Flask + SSE 后端
 │   ├── templates/index.html        # VS Code 风格前端
 │   └── static/                     # CSS + JS 静态资源
-├── tests/                          # 测试套件（19 项全通过）
+├── tests/                          # 测试套件（21 项全通过）
 ├── docs/                           # 文档
 │   ├── ARCHITECTURE.md             # 本文件
 │   └── EXAMPLES.md                 # 使用示例集
@@ -630,4 +657,4 @@ Coding_Agent/
 
 ---
 
-*文档版本: v2.1.0 · 最后更新: 2025-07*
+*文档版本: v3.5.0 · 最后更新: 2025-07*

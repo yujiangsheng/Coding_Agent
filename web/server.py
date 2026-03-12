@@ -2,7 +2,7 @@
 
 提供 VS Code 风格前端的 HTTP API 和 SSE 流式聊天接口。
 
-API 路由（9 个端点）::
+API 路由（10 个端点）::
 
     POST /api/chat           — SSE 流式聊天（Server-Sent Events）
     GET  /api/status         — 记忆与演化统计（含十一维评分）
@@ -13,6 +13,7 @@ API 路由（9 个端点）::
     POST /api/index-project  — 索引项目到 RAG 知识库
     GET  /api/files/list     — 列出目录内容 (?path=目录路径)
     GET  /api/files/read     — 读取文件内容 (?path=文件路径)
+    POST /api/shutdown       — 关闭服务器
 
 启动方式::
 
@@ -27,6 +28,7 @@ License: MIT
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -274,6 +276,19 @@ def files_read():
         "content": content,
         "line_count": content.count("\n") + 1,
     })
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def shutdown():
+    """关闭服务器"""
+    func = request.environ.get("werkzeug.server.shutdown")
+    if func is not None:
+        func()
+    else:
+        # Flask 2.x+ 不再暴露 shutdown 函数，直接退出进程
+        import threading
+        threading.Timer(0.5, lambda: os._exit(0)).start()
+    return jsonify({"status": "ok", "message": "服务器正在关闭"})
 
 
 # ---------------------------------------------------------------------------

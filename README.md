@@ -4,14 +4,14 @@
 
 **自进化编程智能体 · Self-Evolving Coding Agent**
 
-*多模型 AI Coding Agent，具备四层记忆、61 内置工具、MCP 协议集成、多 Provider LLM 路由、基准评测、元认知、自我演化*
+*多模型 AI Coding Agent，具备四层记忆、80 内置工具、MCP 协议集成、多 Provider LLM 路由、基准评测、元认知、自我演化、竞争力驱动进化*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-green.svg)](https://python.org)
 [![Model: Multi-Provider](https://img.shields.io/badge/Model-Ollama%20%7C%20OpenAI%20%7C%20Anthropic%20%7C%20DeepSeek-orange.svg)](https://ollama.com)
-[![Version](https://img.shields.io/badge/Version-2.1.0-purple.svg)](CONTRIBUTING.md)
-[![Tools](https://img.shields.io/badge/Tools-61-brightgreen.svg)](#-工具一览61-工具16-个模块)
-[![Tests](https://img.shields.io/badge/Tests-19%20passed-success.svg)](tests/)
+[![Version](https://img.shields.io/badge/Version-3.5.0-purple.svg)](CONTRIBUTING.md)
+[![Tools](https://img.shields.io/badge/Tools-80-brightgreen.svg)](#-工具一览80-工具19-个模块)
+[![Tests](https://img.shields.io/badge/Tests-21%20passed-success.svg)](tests/)
 
 </div>
 
@@ -22,7 +22,7 @@
 ### 核心能力
 
 - **🧠 四层记忆系统** — 工作记忆 / 长期记忆 / 持久记忆 / 外部记忆（RAG），TF-IDF 中文检索，越用越懂你
-- **🔧 61 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析、批量重构、基准评测、MCP 外部工具集成等
+- **🔧 80 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析 + 依赖图、自动修复、安全扫描、批量重构、基准评测、MCP 外部工具集成、竞争力分析等
 - **🔌 MCP 协议集成** — 通过 Model Context Protocol 连接外部工具服务器（stdio/SSE），自动发现并注册外部工具；可作为 MCP 服务端暴露自身工具给 Claude Code / Cursor / VS Code（对标 Claude Code 工具扩展）
 - **🤖 多 Provider LLM 路由** — 支持 Ollama / OpenAI / Anthropic / DeepSeek，按任务复杂度自动路由到最优模型，失败时自动 fallback
 - **📊 基准评测框架** — 内置 12 道 HumanEval 风格编程题，pass@k 评分 + 业界分数对比（Claude Opus / GPT-4o / Gemini），自修复评测
@@ -31,10 +31,12 @@
 - **🔍 元认知系统** — 6 维认知雷达、偏差检测、置信校准、认知自适应
 - **🧠 智能上下文收集** — import 链追踪 + 错误堆栈解析 + 符号引用查找，精准减少无效 token 占用
 - **⚡ 并行工具执行** — 21 个只读工具自动并发运行（ThreadPoolExecutor），大幅提升多文件操作效率
-- **🔒 安全守护** — 命令黑名单、路径黑名单、输出截断、非空目录删除保护
+- **🔒 安全守护** — SafetyGuard 权限系统 + Docker 沙箱 + 安全扫描 + 审计日志
 - **🏠 本地优先** — 默认基于 Ollama 本地部署，可选接入云端 LLM
+- **🏆 竞争力驱动进化** — 自动对标 7 大竞品（Claude Code/Cursor/Copilot/Devin/Aider/Codex/Windsurf），16 维能力矩阵驱动改进
+- **🔌 LSP 代码补全** — 内置 LSP 服务器，基于 AST 分析的代码补全能力（`python -m turing.lsp`）
 
-### 对标顶尖工具的能力（v2.0）
+### 对标顶尖工具的能力（v3.5）
 
 | 能力 | Turing | Aider | Cursor | Claude Code | Codex |
 |------|--------|-------|--------|-------------|-------|
@@ -57,6 +59,10 @@
 | 失败恢复引擎 | ✅ | ❌ | ❌ | ❌ | ❌ |
 | MCP 协议集成 | ✅ | ❌ | ❌ | ✅ | ❌ |
 | 本地优先 + 云端可选 | ✅ | ✅ | ❌ | ❌ | ❌ |
+| 竞争力自评 + 路线图 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 依赖图分析 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 假设验证引擎 | ✅ | ❌ | ❌ | ❌ | ❌ |
+| LSP 代码补全服务 | ✅ | ❌ | ✅ | ❌ | ❌ |
 
 ## 📋 架构概览
 
@@ -80,24 +86,26 @@
 │  └──────────────────┘ └────────────────┘ └──────────────────────┘  │
 ├───────────┬───────────┬───────────┬────────────────────────────────┤
 │  Tools    │  Memory   │   RAG     │   Evolution + Metacognition    │
-│  (61个    │  (4层)    │  Engine   │                                │
-│  16模块)  │           │           │                                │
+│  (80个    │  (4层)    │  Engine   │   + CompetitiveIntelligence    │
+│  19模块)  │           │           │                                │
 ├───────────┼───────────┼───────────┼────────────────────────────────┤
 │ file(9)   │ L1 working│ ChromaDB  │ 15维评分 · 策略进化            │
-│ command(4)│ L2 long   │  / JSON   │ 失败恢复引擎(8模式×3级)       │
-│ search(4) │ L3 persist│ 查询扩展  │ 自训练模拟器                   │
+│ command(5)│ L2 long   │  / JSON   │ 失败恢复引擎(8模式×3级)       │
+│ search(6) │ L3 persist│ 查询扩展  │ 自训练模拟器                   │
 │ git(8)    │ L4 外部   │ 代码分块  │ 经验合成·知识迁移              │
 │ test(2)   │           │           │ 6维认知雷达                    │
 │ quality(3)│ TF-IDF    │           │ 偏差检测·置信校准              │
 │ refactor  │ 跨层排序  │           │ 认知自适应                     │
 │ project   │ Jaccard   │           │ 工具探索顾问                   │
-│ ast(3)    │  去重     │           │ 恢复剧本构建                   │
-│ memory(3) │           │           │                                │
+│ ast(4)    │  去重     │           │ 恢复剧本构建                   │
+│ memory(3) │           │           │ 竞争力分析(16维×7竞品)        │
 │ rag/web   │           │           │                                │
-│ evolve(10)│           │           │                                │
+│ evolve(12)│           │           │                                │
 │ metacog(2)│           │           │                                │
 │benchmark3 │           │           │                                │
 │ mcp(3)    │           │           │                                │
+│ agent(1)  │           │           │                                │
+│ github(5) │           │           │                                │
 └───────────┴───────────┴───────────┴────────────────────────────────┘
          ↕                  ↕               ↕
     LLM Router          向量数据库      turing_data/
@@ -239,7 +247,7 @@ You > 帮我写一个快速排序算法
 10. **自训练模拟器** — 生成合成任务并自我训练，持续提升弱项
 11. **元认知监控** — 6 维认知雷达（计划质量 / 工具效率 / 错误恢复 / 创造性 / 专注度 / 综合），偏差检测与置信校准
 
-## 🔧 工具一览（61 工具，16 个模块）
+## 🔧 工具一览（80 工具，19 个模块）
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -252,14 +260,17 @@ You > 帮我写一个快速排序算法
 | | `copy_file` | 复制文件或目录 |
 | | `delete_file` | 安全删除文件（非空目录保护） |
 | | `find_files` | 按名称/模式/内容搜索文件（glob + regex） |
-| **命令执行 (4)** | `run_command` | 持久化 Shell（env/cwd 跨调用保持 + 安全过滤） |
+| **命令执行 (5)** | `run_command` | 持久化 Shell（env/cwd 跨调用保持 + 安全过滤） |
 | | `run_background` | 启动后台进程（服务器、watch 等） |
 | | `check_background` | 查看后台进程输出与状态 |
 | | `stop_background` | 终止后台进程 |
-| **代码搜索 (4)** | `search_code` | 文本/正则搜索（ripgrep/grep） |
+| | `auto_fix` | 自动运行 linter 并修复代码风格（ruff/eslint） |
+| **代码搜索 (6)** | `search_code` | 文本/正则搜索（ripgrep/grep） |
 | | `list_directory` | 列出目录内容（递归 + 文件大小） |
 | | `repo_map` | 代码仓库结构地图（模块 + 函数 + 类） |
 | | `smart_context` | 智能上下文收集（import 链 / 符号引用 / 错误堆栈解析） |
+| | `context_budget` | 上下文 token 预算监控与优化建议 |
+| | `context_compress` | 智能上下文压缩（按内容类型选择压缩策略） |
 | **Git 操作 (8)** | `git_status` | 查看仓库状态 |
 | | `git_diff` | 查看差异（工作区/暂存区/提交间） |
 | | `git_log` | 查看提交历史（支持过滤） |
@@ -278,15 +289,16 @@ You > 帮我写一个快速排序算法
 | | `impact_analysis` | 跨文件影响分析（修改前评估依赖影响） |
 | **项目分析 (2)** | `detect_project` | 自动检测项目类型、语言、框架 |
 | | `analyze_dependencies` | 解析依赖文件 |
-| **AST 代码分析 (3)** | `code_structure` | 提取文件/目录的类、函数、导入结构 |
+| **AST 代码分析 (4)** | `code_structure` | 提取文件/目录的类、函数、导入结构 |
 | | `call_graph` | 分析函数调用关系图和依赖链 |
 | | `complexity_report` | 圈复杂度分析报告（识别高复杂度函数） |
+| | `dependency_graph` | 模块依赖图分析 + 循环依赖检测 + 拓扑分层 |
 | **记忆管理 (3)** | `memory_read` | 检索记忆（working/long_term/persistent） |
 | | `memory_write` | 写入记忆 |
 | | `memory_reflect` | 任务反思 |
 | **外部搜索 (2)** | `rag_search` | RAG 本地文档检索（查询扩展 + 代码分块） |
 | | `web_search` | DuckDuckGo 搜索 |
-| **自我演化 (10)** | `learn_from_ai_tool` | 学习 AI 工具策略 |
+| **自我演化 (12)** | `learn_from_ai_tool` | 学习 AI 工具策略 |
 | | `gap_analysis` | 能力差距分析 + 改进路线图 |
 | | `evolve_strategies` | 批量策略进化 |
 | | `distill_knowledge` | 知识蒸馏（合并冗余、淘汰低质量） |
@@ -296,6 +308,8 @@ You > 帮我写一个快速排序算法
 | | `self_training` | 自训练模拟器 |
 | | `build_playbook` | 恢复剧本构建 |
 | | `cross_task_transfer` | 跨任务知识迁移 |
+| | `competitive_benchmark` | 竞争力自评（16 维 × 7 竞品对标） |
+| | `verify_hypothesis` | 结构化假设验证（含命令行实验） |
 | **元认知 (2)** | `metacognition_checkpoint` | 认知检查点（6 维雷达扫描） |
 | | `metacognition_report` | 元认知综合报告 |
 | **基准评测 (3)** | `run_benchmark` | HumanEval 风格代码生成评测（pass@k） |
@@ -304,6 +318,18 @@ You > 帮我写一个快速排序算法
 | **MCP 集成 (3)** | `mcp_list_servers` | 列出已配置的 MCP 服务器及连接状态 |
 | | `mcp_list_tools` | 发现已连接 MCP 服务器的外部工具 |
 | | `mcp_call_tool` | 调用外部 MCP 服务器工具（mcp::server::tool） |
+| **子 Agent (1)** | `delegate_task` | 分派子任务给独立子 Agent 执行 |
+| **GitHub (5)** | `github_create_issue` | 创建 GitHub Issue |
+| | `github_create_pr` | 创建 Pull Request |
+| | `github_list_issues` | 列出 Issues |
+| | `github_list_prs` | 列出 Pull Requests |
+| | `github_add_comment` | 添加评论 |
+| **v3.4 新增** | `task_plan` | 结构化任务分解（含依赖、风险、验证标准） |
+| | `checkpoint_save` | 文件修改前创建快照 |
+| | `checkpoint_restore` | 失败时一键回滚到快照 |
+| | `test_coverage` | 专用覆盖率分析（pytest-cov / Istanbul） |
+| | `security_scan` | 静态安全扫描（bandit / 内置正则 8 种模式） |
+| | `pr_summary` | 基于 git diff 自动生成 PR 描述 |
 
 ## 🌐 Web UI
 
@@ -426,6 +452,10 @@ security:
 | v1.0 | **生产级完善**：持久化 Shell 会话（env/cwd 跨调用保持）、后台进程管理、文件管理（move/copy/delete/find）、原子化多文件编辑（multi_edit）、Token-aware 上下文管理、测试覆盖率 + 失败详情、自动项目索引（54 工具） | ✅ 已完成 |
 | v2.0 | **多模型 + 基准评测**：多 Provider LLM 路由（Ollama/OpenAI/Anthropic/DeepSeek）、按复杂度自动路由 + fallback、HumanEval 基准评测框架（12 题 + pass@k + 自修复）、业界分数对比、智能上下文收集（import 链 + 错误堆栈 + 符号引用）、多维代码质量评估（58 工具） | ✅ 已完成 |
 | v2.1 | **MCP 协议集成**：MCP 客户端（stdio/SSE 双传输 + 自动工具发现注册）、MCP 服务端（暴露 61 工具给外部 AI 客户端）、多服务器管理（命名空间隔离）、3 个 MCP 管理工具（对标 Claude Code 工具扩展）（61 工具） | ✅ 已完成 |
+| v3.0 | **安全防护 + 精确 Token + 子 Agent**：SafetyGuard 权限系统 + Docker 沙箱、tiktoken 精确 Token 计算 + 消息优先级打分 + 渐进式多层压缩、多语言 AST（tree-sitter）、增量 RAG 索引（SHA-256）、子 Agent 分派（delegate_task）、SWE-bench 评测框架、迭代上限 50 轮（68 工具） | ✅ 已完成 |
+| v3.3 | **竞争力分析引擎**：自动对标 7 大竞品（Claude Code/Cursor/Copilot/Devin/Aider/Codex/Windsurf）、16 维能力矩阵、竞争力驱动进化、改进路线图生成、趋势追踪（69 工具） | ✅ 已完成 |
+| v3.4 | **竞争力驱动第一轮补全**：context_budget / task_plan / checkpoint_save/restore / test_coverage / security_scan / pr_summary、detect_project 增强（CI/CD + Monorepo）、多路径推理 + 上下文预算管理提示（76 工具） | ✅ 已完成 |
+| v3.5 | **竞争力驱动第二轮补全**：context_compress / dependency_graph / auto_fix / verify_hypothesis、LSP 补全服务器（python -m turing.lsp）、增强型上下文压缩、竞争力评分排名 1/8（0.864）（80 工具、21 测试通过） | ✅ 已完成 |
 | v2.2 | 沙箱隔离（Docker 容器化代码执行） | 📋 计划中 |
 | v2.3 | 多模态支持（图片/截图/UML 理解） | 📋 计划中 |
 | v2.4 | IDE 插件（VS Code Extension） | 📋 计划中 |

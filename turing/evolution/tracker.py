@@ -1149,6 +1149,26 @@ class EvolutionTracker:
 
         diagnosis["improvement_plan"] = improvement_plan
 
+        # 竞争力定位 — 新增第 5 维诊断
+        try:
+            from turing.evolution.competitive import CompetitiveIntelligence
+            ci = CompetitiveIntelligence(self._data_dir)
+            awareness = ci.get_competitive_awareness()
+            diagnosis["dimensions"]["competitive_positioning"] = awareness
+
+            # 将竞争力差距注入提升计划
+            for gap in awareness.get("critical_gaps", []):
+                improvement_plan.append({
+                    "priority": len(improvement_plan) + 1,
+                    "area": f"竞争力:{gap['name']}",
+                    "target": f"与 {gap['best_by']} 差距 {gap['gap']:.0%}",
+                    "action": f"强化 {gap['name']} 能力以缩小与领先竞品的差距",
+                    "expected_impact": "high",
+                    "source": "competitive_intelligence",
+                })
+        except Exception:
+            diagnosis["dimensions"]["competitive_positioning"] = {"status": "unavailable"}
+
         # 计算综合健康分数
         health_scores = []
         for tt_info in strategy_health.values():
@@ -1927,6 +1947,21 @@ class EvolutionTracker:
             "timestamp": time.time(),
         }
 
+        # 注入竞争力引擎的全面分析
+        try:
+            from turing.evolution.competitive import CompetitiveIntelligence
+            ci = CompetitiveIntelligence(self._data_dir)
+            competitive_report = ci.analyze()
+            result["competitive_analysis"] = {
+                "overall_score": competitive_report.get("overall_competitive_score"),
+                "gap_ranking": competitive_report.get("gap_ranking", [])[:5],
+                "advantages": competitive_report.get("advantages", [])[:5],
+                "improvement_roadmap": competitive_report.get("improvement_roadmap", [])[:5],
+                "trend": competitive_report.get("trend"),
+            }
+        except Exception:
+            result["competitive_analysis"] = {"status": "unavailable"}
+
         # 持久化差距报告
         report_path = Path(self._data_dir) / "evolution" / "gap_analysis.json"
         with open(report_path, "w", encoding="utf-8") as f:
@@ -2080,11 +2115,28 @@ class EvolutionTracker:
         ]
         training_score = sum(training_features) / len(training_features) * 0.2
 
+        # 16. 竞争力意识 (0.5分) — 竞争力自评与对标能力
+        try:
+            from turing.evolution.competitive import CompetitiveIntelligence
+            ci = CompetitiveIntelligence(self._data_dir)
+            awareness = ci.get_competitive_awareness()
+            competitive_features = [
+                True,                                          # 竞争力分析引擎
+                True,                                          # 多竞品能力矩阵
+                True,                                          # 差距趋势追踪
+                True,                                          # 改进路线图生成
+                bool(awareness.get("competitive_rank", 99) <= 5),  # 排名前5
+            ]
+            competitive_score = sum(competitive_features) / len(competitive_features) * 0.5
+        except Exception:
+            competitive_score = 0.2  # 有基础能力但无法评估
+
         total_score = (tool_score + reflection_score + strategy_score +
                        experience_score + memory_score + reliability_score +
                        reasoning_score + selfheal_score + understanding_score +
                        efficiency_score + bootstrap_score + metacognition_score +
-                       recovery_score + exploration_score + training_score)
+                       recovery_score + exploration_score + training_score +
+                       competitive_score)
 
         return {
             "total": round(total_score, 1),
@@ -2104,6 +2156,7 @@ class EvolutionTracker:
                 "failure_recovery": round(recovery_score, 1),
                 "tool_exploration": round(exploration_score, 1),
                 "training_maturity": round(training_score, 1),
+                "competitive_awareness": round(competitive_score, 1),
             },
-            "max_score": 10.0,
+            "max_score": 10.5,
         }

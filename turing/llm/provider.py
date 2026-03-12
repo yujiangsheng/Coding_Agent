@@ -3,16 +3,43 @@
 定义统一的 LLMProvider 接口，以及 Ollama / OpenAI / Anthropic / DeepSeek
 四种具体实现。所有 provider 暴露相同的 ``chat()`` 和 ``stream_chat()`` 方法，
 返回统一的消息格式 ``{"role": "assistant", "content": "...", "tool_calls": [...]}``。
+
+v3.1: 新增 Vision/图片输入支持（对标 Claude Code / Cursor 的多模态能力）
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ────────────────────────── Vision 辅助 ──────────────────────────
+
+def encode_image(image_path: str) -> tuple[str, str]:
+    """将本地图片编码为 base64 字符串并检测 MIME 类型
+
+    Returns:
+        (base64_data, media_type) — e.g. ("iVBOR...", "image/png")
+    """
+    ext_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }
+    ext = os.path.splitext(image_path)[1].lower()
+    media_type = ext_map.get(ext, "image/png")
+
+    with open(image_path, "rb") as f:
+        data = base64.b64encode(f.read()).decode("utf-8")
+    return data, media_type
 
 
 # ────────────────────────── 统一响应格式 ──────────────────────────
@@ -98,12 +125,37 @@ class OllamaProvider(LLMProvider):
         super().__init__(model, temperature, **kwargs)
         self._host = kwargs.get("host", "http://127.0.0.1:11434")
 
+    @staticmethod
+    def _prepare_ollama_messages(messages: list[dict]) -> list[dict]:
+        """为 Ollama 消息添加 images 支持（base64 列表）"""
+        prepared = []
+        for m in messages:
+            entry = dict(m)
+            images = entry.pop("images", None)
+            if images and entry.get("role") == "user":
+                img_data = []
+                for img in images:
+                    if os.path.isfile(img):
+                        data, _ = encode_image(img)
+                        img_data.append(data)
+                    elif img.startswith(("http://", "https://")):
+                        # Ollama 不直接支持 URL，跳过
+                        pass
+                    else:
+                        # 假定已是 base64 字符串
+                        img_data.append(img)
+                if img_data:
+                    entry["images"] = img_data
+            prepared.append(entry)
+        return prepared
+
     def chat(self, messages, tools=None, temperature=None, **kwargs):
         import ollama
         temp = temperature if temperature is not None else self.temperature
+        prepared = self._prepare_ollama_messages(messages)
         resp = ollama.chat(
             model=self.model,
-            messages=messages,
+            messages=prepared,
             tools=tools or None,
             options={"temperature": temp},
         )
@@ -117,9 +169,10 @@ class OllamaProvider(LLMProvider):
     def stream_chat(self, messages, tools=None, temperature=None, **kwargs):
         import ollama
         temp = temperature if temperature is not None else self.temperature
+        prepared = self._prepare_ollama_messages(messages)
         stream = ollama.chat(
             model=self.model,
-            messages=messages,
+            messages=prepared,
             tools=tools or None,
             options={"temperature": temp},
             stream=True,
@@ -174,19 +227,40 @@ class OpenAIProvider(LLMProvider):
         return openai_tools
 
     def _convert_messages(self, messages: list[dict]) -> list[dict]:
-        """统一消息格式到 OpenAI 格式"""
+        """统一消息格式到 OpenAI 格式（支持 Vision 多模态）"""
         converted = []
         for m in messages:
             role = m.get("role", "user")
             if role == "tool":
-                # OpenAI 需要 tool_call_id，补一个占位
                 converted.append({
                     "role": "tool",
                     "content": m.get("content", ""),
                     "tool_call_id": m.get("tool_call_id", "call_placeholder"),
                 })
             else:
-                entry = {"role": role, "content": m.get("content", "")}
+                entry = {"role": role}
+                # Vision: 如果消息包含 images 字段，使用多模态格式
+                images = m.get("images", [])
+                text = m.get("content", "")
+                if images and role == "user":
+                    content_parts = []
+                    if text:
+                        content_parts.append({"type": "text", "text": text})
+                    for img in images:
+                        if img.startswith(("http://", "https://")):
+                            content_parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": img},
+                            })
+                        elif os.path.isfile(img):
+                            data, media = encode_image(img)
+                            content_parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{media};base64,{data}"},
+                            })
+                    entry["content"] = content_parts
+                else:
+                    entry["content"] = text
                 if m.get("tool_calls") and role == "assistant":
                     tc_list = []
                     for i, tc in enumerate(m["tool_calls"]):
@@ -202,7 +276,6 @@ class OpenAIProvider(LLMProvider):
                             },
                         })
                     entry["tool_calls"] = tc_list
-                    # OpenAI: assistant with tool_calls may have null content
                     if not entry["content"]:
                         entry["content"] = None
                 converted.append(entry)
@@ -319,21 +392,40 @@ class AnthropicProvider(LLMProvider):
         return anthropic_tools
 
     def _extract_system(self, messages: list[dict]) -> tuple[str, list[dict]]:
-        """提取 system 消息（Anthropic 需要单独传 system 参数）"""
+        """提取 system 消息（Anthropic 需要单独传 system 参数），支持 Vision"""
         system_parts = []
         non_system = []
         for m in messages:
             if m.get("role") == "system":
                 system_parts.append(m.get("content", ""))
             elif m.get("role") == "tool":
-                # Anthropic: tool results as user message with tool_result block
                 non_system.append({
                     "role": "user",
                     "content": [{"type": "tool_result", "tool_use_id": "placeholder", "content": m.get("content", "")}],
                 })
             else:
                 entry = {"role": m.get("role", "user")}
-                if m.get("tool_calls") and m.get("role") == "assistant":
+                # Vision: 如果消息包含 images 字段
+                images = m.get("images", [])
+                if images and m.get("role") == "user":
+                    content_blocks = []
+                    text = m.get("content", "")
+                    if text:
+                        content_blocks.append({"type": "text", "text": text})
+                    for img in images:
+                        if img.startswith(("http://", "https://")):
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {"type": "url", "url": img},
+                            })
+                        elif os.path.isfile(img):
+                            data, media = encode_image(img)
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {"type": "base64", "media_type": media, "data": data},
+                            })
+                    entry["content"] = content_blocks
+                elif m.get("tool_calls") and m.get("role") == "assistant":
                     content_blocks = []
                     if m.get("content"):
                         content_blocks.append({"type": "text", "text": m["content"]})
@@ -375,6 +467,23 @@ class AnthropicProvider(LLMProvider):
                 merged.append(m)
         return merged
 
+    def _apply_prompt_caching(self, system: str) -> list[dict] | str:
+        """将 system prompt 转换为带缓存控制的格式（v3.2 — Prompt Caching）
+
+        Anthropic prompt caching 可将 system prompt 缓存起来，
+        后续请求中标记 cache_control.ephemeral 即可复用缓存，
+        降低 ~90% 的 system prompt 处理成本。
+        """
+        if not system or len(system) < 500:
+            return system  # 太短不值得缓存
+        return [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
     def chat(self, messages, tools=None, temperature=None, **kwargs):
         client = self._get_client()
         temp = temperature if temperature is not None else self.temperature
@@ -386,7 +495,7 @@ class AnthropicProvider(LLMProvider):
             "temperature": temp,
         }
         if system:
-            call_kwargs["system"] = system
+            call_kwargs["system"] = self._apply_prompt_caching(system)
         anthropic_tools = self._convert_tools(tools)
         if anthropic_tools:
             call_kwargs["tools"] = anthropic_tools
@@ -417,7 +526,7 @@ class AnthropicProvider(LLMProvider):
             "temperature": temp,
         }
         if system:
-            call_kwargs["system"] = system
+            call_kwargs["system"] = self._apply_prompt_caching(system)
         anthropic_tools = self._convert_tools(tools)
         if anthropic_tools:
             call_kwargs["tools"] = anthropic_tools

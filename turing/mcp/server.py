@@ -56,7 +56,7 @@ class MCPServer:
 
     SERVER_INFO = {
         "name": "turing-agent",
-        "version": "2.1.0",
+        "version": "3.5.0",
     }
 
     CAPABILITIES = {

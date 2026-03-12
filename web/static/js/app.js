@@ -574,6 +574,7 @@ const commands = [
   { id: 'panel-explorer', label: '切换到: 探索',       icon: 'codicon-search',               keybinding: '',      action: () => switchPanel('explorer') },
   { id: 'panel-settings', label: '切换到: 设置',       icon: 'codicon-settings-gear',        keybinding: '',      action: () => switchPanel('settings') },
   { id: 'refresh-stats',  label: '刷新统计数据',       icon: 'codicon-refresh',              keybinding: '',      action: () => { refreshStats(); showNotification('已刷新统计数据', 'info', 2000); } },
+  { id: 'shutdown',       label: '退出服务',           icon: 'codicon-close',                keybinding: '⌘Q',   action: () => shutdownServer() },
 ];
 
 let cmdSelectedIndex = 0;
@@ -980,6 +981,19 @@ async function newSession() {
   } catch (_) {}
 }
 
+async function shutdownServer() {
+  if (!confirm('确定要退出服务吗？')) return;
+  try {
+    panelLog('正在关闭服务器...', 'warning');
+    showNotification('服务器正在关闭...', 'warning', 3000);
+    await fetch('/api/shutdown', { method: 'POST' });
+    setStatus('circle-slash', '已断开');
+    document.title = 'Turing — 已停止';
+  } catch (_) {
+    setStatus('circle-slash', '已断开');
+  }
+}
+
 // =========================================================================
 // 全局快捷键
 // =========================================================================
@@ -1041,6 +1055,13 @@ function initKeyboardShortcuts() {
       dom.userInput.focus();
       return;
     }
+
+    // ⌘Q / Ctrl+Q — Shutdown server
+    if (mod && e.key === 'q') {
+      e.preventDefault();
+      shutdownServer();
+      return;
+    }
   });
 
   // Command palette input handling
@@ -1085,6 +1106,8 @@ function initTitleBarMenus() {
       { id: 'new-session', icon: 'codicon-add', label: '新建会话', shortcut: '⌘N', action: () => newSession() },
       { separator: true },
       { id: 'index-project', icon: 'codicon-folder-library', label: '索引项目...', action: () => openModal('modal-index') },
+      { separator: true },
+      { id: 'shutdown', icon: 'codicon-close', label: '退出', shortcut: '⌘Q', action: () => shutdownServer() },
     ],
     edit: [
       { id: 'clear-chat', icon: 'codicon-clear-all', label: '清空对话', action: () => clearChat() },
@@ -1200,6 +1223,7 @@ function init() {
   $('#btn-toggle-panel').addEventListener('click', togglePanel);
   $('#btn-toggle-sidebar-vis').addEventListener('click', toggleSidebar);
   $('#open-command-palette').addEventListener('click', openCommandPalette);
+  $('#btn-shutdown').addEventListener('click', shutdownServer);
 
   // Panel buttons
   $('#btn-close-panel').addEventListener('click', () => { panelVisible = false; dom.panelArea.classList.remove('visible'); dom.panelSash.style.display = 'none'; });

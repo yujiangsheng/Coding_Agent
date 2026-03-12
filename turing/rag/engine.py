@@ -37,6 +37,8 @@ class RAGEngine:
         self._data_dir.mkdir(parents=True, exist_ok=True)
         self._docs_dir = self._data_dir / "docs"
         self._docs_dir.mkdir(exist_ok=True)
+        self._hash_store_path = self._data_dir / "file_hashes.json"
+        self._file_hashes: dict[str, str] = self._load_hashes()
 
         if HAS_CHROMADB:
             self._client = chromadb.PersistentClient(
@@ -45,6 +47,31 @@ class RAGEngine:
             self._collections = {}
         else:
             self._collections = {}
+
+    def _load_hashes(self) -> dict[str, str]:
+        """加载文件哈希缓存"""
+        if self._hash_store_path.exists():
+            try:
+                return json.loads(self._hash_store_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def _save_hashes(self):
+        """持久化文件哈希缓存"""
+        self._hash_store_path.write_text(
+            json.dumps(self._file_hashes, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _file_hash(self, filepath: str) -> str:
+        """计算文件内容哈希"""
+        h = hashlib.sha256()
+        p = Path(filepath)
+        if not p.exists():
+            return ""
+        h.update(p.read_bytes())
+        return h.hexdigest()[:16]
 
     def _get_collection(self, source: str):
         """获取或创建指定 source 的 ChromaDB collection。"""
@@ -58,13 +85,19 @@ class RAGEngine:
         return self._collections[source]
 
     def index_file(self, filepath: str, source: str = "docs", chunk_size: int = 500):
-        """将文件分块索引到 RAG 库"""
+        """将文件分块索引到 RAG 库（增量：跳过未变更文件）"""
         if not HAS_CHROMADB:
             return {"error": "ChromaDB 未安装，RAG 不可用"}
 
         p = Path(filepath)
         if not p.exists():
             return {"error": f"文件不存在: {filepath}"}
+
+        # 增量检查：文件未变更则跳过
+        current_hash = self._file_hash(filepath)
+        cache_key = f"{source}:{filepath}"
+        if cache_key in self._file_hashes and self._file_hashes[cache_key] == current_hash:
+            return {"status": "skipped", "reason": "unchanged", "file": filepath}
 
         text = p.read_text(encoding="utf-8", errors="replace")
         chunks = self._split_text(text, chunk_size)
@@ -80,11 +113,15 @@ class RAGEngine:
             )
             ids.append(doc_id)
 
+        # 更新哈希缓存
+        self._file_hashes[cache_key] = current_hash
+        self._save_hashes()
+
         return {"status": "ok", "chunks_indexed": len(chunks), "file": filepath}
 
     def index_directory(self, dirpath: str, source: str = "docs",
                         extensions: list[str] = None):
-        """索引整个目录"""
+        """增量索引整个目录（仅重索引变更文件）"""
         if extensions is None:
             extensions = [".md", ".txt", ".rst", ".py", ".js", ".ts", ".yaml", ".yml"]
         p = Path(dirpath)
@@ -92,11 +129,51 @@ class RAGEngine:
             return {"error": f"目录不存在: {dirpath}"}
 
         indexed = 0
+        skipped = 0
+        skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
         for ext in extensions:
             for fp in p.rglob(f"*{ext}"):
-                self.index_file(str(fp), source)
-                indexed += 1
-        return {"status": "ok", "files_indexed": indexed}
+                if any(part in skip_dirs for part in fp.relative_to(p).parts):
+                    continue
+                result = self.index_file(str(fp), source)
+                if result.get("status") == "skipped":
+                    skipped += 1
+                else:
+                    indexed += 1
+        return {"status": "ok", "files_indexed": indexed, "files_skipped": skipped}
+
+    def remove_file_from_index(self, filepath: str, source: str = "docs") -> dict:
+        """从 RAG 索引中删除指定文件的所有分块（v3.1）"""
+        if not HAS_CHROMADB:
+            return {"error": "ChromaDB 未安装，RAG 不可用"}
+
+        collection = self._get_collection(source)
+        if collection is None:
+            return {"error": f"集合 '{source}' 不存在"}
+
+        # 查找该文件的所有 chunk IDs
+        try:
+            results = collection.get(
+                where={"source_file": filepath},
+            )
+            ids_to_delete = results.get("ids", [])
+            if ids_to_delete:
+                collection.delete(ids=ids_to_delete)
+        except Exception:
+            # Fallback: 用 ID 前缀匹配暴力删除
+            ids_to_delete = []
+
+        # 清除哈希缓存
+        cache_key = f"{source}:{filepath}"
+        removed_hash = self._file_hashes.pop(cache_key, None)
+        if removed_hash or ids_to_delete:
+            self._save_hashes()
+
+        return {
+            "status": "ok",
+            "file": filepath,
+            "chunks_removed": len(ids_to_delete),
+        }
 
     def search(self, query: str, source: str = "docs", top_k: int = 5) -> dict:
         """在 RAG 库中搜索（支持查询扩展）"""

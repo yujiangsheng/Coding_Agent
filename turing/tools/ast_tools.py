@@ -1,19 +1,47 @@
 """AST 智能代码分析工具
 
-提供基于 Python AST 的深度代码理解能力（对标 Gemini/Codex 的代码分析能力）：
+提供多语言代码深度理解能力（对标 Gemini/Codex 的代码分析能力）：
 - code_structure    — 提取文件的类、函数、导入等结构信息
 - call_graph        — 分析函数调用关系图
 - complexity_report — 计算代码复杂度并识别热点
+
+支持语言：
+- Python（内置 ast 模块，完整支持）
+- JavaScript / TypeScript / Go / Rust / Java（通过 tree-sitter，结构提取）
 """
 
 from __future__ import annotations
 
 import ast
 import os
+import re
 from collections import defaultdict
 from pathlib import Path
 
 from turing.tools.registry import tool
+
+# ===== tree-sitter 多语言支持 =====
+try:
+    import tree_sitter_languages
+    HAS_TREE_SITTER = True
+except ImportError:
+    HAS_TREE_SITTER = False
+
+# 语言后缀映射
+_LANG_MAP: dict[str, str] = {
+    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+    ".rb": "ruby",
+    ".py": "python",
+}
+
+# 支持 tree-sitter 分析的后缀集合（不含 .py，Python 用内置 ast）
+_TS_SUPPORTED = {k for k, v in _LANG_MAP.items() if v != "python"}
 
 
 def _safe_parse(filepath: Path) -> ast.Module | None:
@@ -25,16 +53,183 @@ def _safe_parse(filepath: Path) -> ast.Module | None:
         return None
 
 
+def _ts_parse(filepath: Path) -> tuple | None:
+    """用 tree-sitter 解析非 Python 文件，返回 (tree, language_name) 或 None"""
+    if not HAS_TREE_SITTER:
+        return None
+    lang = _LANG_MAP.get(filepath.suffix.lower())
+    if not lang or lang == "python":
+        return None
+    try:
+        parser = tree_sitter_languages.get_parser(lang)
+        source = filepath.read_bytes()
+        tree = parser.parse(source)
+        return (tree, lang)
+    except Exception:
+        return None
+
+
+def _ts_extract_structure(filepath: Path, include_private: bool) -> dict | None:
+    """用 tree-sitter 提取非 Python 文件的代码结构"""
+    result = _ts_parse(filepath)
+    if result is None:
+        return None
+
+    tree, lang = result
+    source = filepath.read_bytes()
+    root = tree.root_node
+
+    classes = []
+    functions = []
+    imports = []
+    global_vars = []
+
+    def _node_text(node) -> str:
+        return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
+
+    def _extract_name(node):
+        """从节点中提取名称"""
+        for child in node.children:
+            if child.type in ("identifier", "type_identifier", "property_identifier"):
+                return _node_text(child)
+        return ""
+
+    for child in root.children:
+        ntype = child.type
+
+        # --- 函数/方法 ---
+        if ntype in ("function_declaration", "function_definition", "method_definition",
+                      "function_item", "method_declaration",
+                      "arrow_function", "lexical_declaration"):
+            name = ""
+            is_async = False
+
+            if ntype == "lexical_declaration":
+                # const foo = (...) => {...} 或 const foo = function(...) {...}
+                for decl in child.children:
+                    if decl.type == "variable_declarator":
+                        name = _extract_name(decl)
+                        # 检查值是否是箭头函数或函数表达式
+                        for val in decl.children:
+                            if val.type in ("arrow_function", "function"):
+                                break
+                        else:
+                            name = ""  # 不是函数赋值，跳过
+                if not name:
+                    # 普通变量声明 → global_vars
+                    for decl in child.children:
+                        if decl.type == "variable_declarator":
+                            vname = _extract_name(decl)
+                            if vname and (include_private or not vname.startswith("_")):
+                                global_vars.append({"name": vname, "line": child.start_point[0] + 1})
+                    continue
+            else:
+                name = _extract_name(child)
+
+            if not name:
+                continue
+            if not include_private and name.startswith("_"):
+                continue
+
+            # 检查 async
+            first_text = _node_text(child.children[0]) if child.children else ""
+            if first_text == "async":
+                is_async = True
+
+            # 提取参数
+            args = []
+            for sub in child.children:
+                if sub.type in ("formal_parameters", "parameter_list", "parameters"):
+                    for param in sub.children:
+                        pname = _extract_name(param) if param.type != "," else ""
+                        if not pname and param.type in ("identifier", "simple_identifier"):
+                            pname = _node_text(param)
+                        if pname and pname not in ("(", ")", ",", "self", "this"):
+                            args.append(pname)
+
+            functions.append({
+                "name": name,
+                "line": child.start_point[0] + 1,
+                "args": args,
+                "is_async": is_async,
+            })
+
+        # --- 类/结构体 ---
+        elif ntype in ("class_declaration", "class_definition", "struct_item",
+                        "impl_item", "interface_declaration", "type_declaration"):
+            name = _extract_name(child)
+            if not name:
+                continue
+            if not include_private and name.startswith("_"):
+                continue
+
+            methods = []
+            # 在类体中查找方法
+            for sub in child.children:
+                if sub.type in ("class_body", "declaration_list", "block"):
+                    for member in sub.children:
+                        if member.type in ("method_definition", "function_definition",
+                                           "function_item", "method_declaration",
+                                           "public_field_definition"):
+                            mname = _extract_name(member)
+                            if mname and (include_private or not mname.startswith("_")):
+                                m_args = []
+                                for mp in member.children:
+                                    if mp.type in ("formal_parameters", "parameter_list", "parameters"):
+                                        for param in mp.children:
+                                            pn = _extract_name(param)
+                                            if pn and pn not in ("(", ")", ",", "self", "this"):
+                                                m_args.append(pn)
+                                methods.append({
+                                    "name": mname,
+                                    "line": member.start_point[0] + 1,
+                                    "args": m_args,
+                                    "is_async": any(_node_text(c) == "async" for c in member.children[:2]),
+                                })
+
+            classes.append({
+                "name": name,
+                "line": child.start_point[0] + 1,
+                "bases": [],
+                "methods": methods,
+            })
+
+        # --- 导入 ---
+        elif ntype in ("import_statement", "import_declaration", "use_declaration",
+                        "package_clause"):
+            imports.append(_node_text(child).strip().rstrip(";"))
+
+        # --- 全局变量 ---
+        elif ntype in ("variable_declaration", "const_declaration", "let_declaration",
+                        "static_item", "const_item"):
+            vname = _extract_name(child)
+            if vname and (include_private or not vname.startswith("_")):
+                global_vars.append({"name": vname, "line": child.start_point[0] + 1})
+
+    total_lines = len(source.decode("utf-8", errors="replace").splitlines())
+
+    return {
+        "file": str(filepath),
+        "language": lang,
+        "total_lines": total_lines,
+        "imports": imports,
+        "classes": classes,
+        "functions": functions,
+        "global_vars": global_vars,
+    }
+
+
 @tool(
     name="code_structure",
-    description="解析 Python 文件的 AST，提取类、函数、全局变量、导入等结构信息。"
+    description="解析源代码文件的 AST，提取类、函数、全局变量、导入等结构信息。"
+                "支持 Python/JavaScript/TypeScript/Go/Rust/Java/C/C++/Ruby。"
                 "可用于快速理解文件组织结构，无需逐行阅读。",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Python 文件或目录路径",
+                "description": "源代码文件或目录路径",
             },
             "include_private": {
                 "type": "boolean",
@@ -45,35 +240,48 @@ def _safe_parse(filepath: Path) -> ast.Module | None:
     },
 )
 def code_structure(path: str, include_private: bool = False) -> dict:
-    """提取 Python 文件 / 目录的代码结构"""
+    """提取源代码文件 / 目录的代码结构（多语言支持）"""
     p = Path(path).resolve()
     if not p.exists():
         return {"error": f"路径不存在: {path}"}
 
-    if p.is_file():
-        if not p.suffix == ".py":
-            return {"error": "仅支持 Python 文件"}
-        return _extract_structure(p, include_private)
+    supported_exts = {".py"} | _TS_SUPPORTED
 
-    # 目录模式：汇总所有 py 文件
+    if p.is_file():
+        if p.suffix == ".py":
+            return _extract_structure(p, include_private)
+        elif p.suffix.lower() in _TS_SUPPORTED:
+            result = _ts_extract_structure(p, include_private)
+            if result is None:
+                return {"error": f"tree-sitter 未安装，无法分析 {p.suffix} 文件。请 pip install tree-sitter-languages"}
+            return result
+        else:
+            return {"error": f"不支持的文件类型: {p.suffix}。支持: {', '.join(sorted(supported_exts))}"}
+
+    # 目录模式：汇总所有支持的文件
     results = {}
     skip = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"}
-    py_files = sorted(
-        f for f in p.rglob("*.py")
-        if not any(part in skip for part in f.relative_to(p).parts)
+    code_files = sorted(
+        f for f in p.rglob("*")
+        if f.is_file()
+        and f.suffix.lower() in supported_exts
+        and not any(part in skip for part in f.relative_to(p).parts)
     )
-    if len(py_files) > 100:
-        py_files = py_files[:100]
+    if len(code_files) > 100:
+        code_files = code_files[:100]
 
-    for fp in py_files:
+    for fp in code_files:
         rel = str(fp.relative_to(p))
-        info = _extract_structure(fp, include_private)
+        if fp.suffix == ".py":
+            info = _extract_structure(fp, include_private)
+        else:
+            info = _ts_extract_structure(fp, include_private) or {"error": "tree-sitter 未安装"}
         if info.get("classes") or info.get("functions") or info.get("global_vars"):
             results[rel] = info
 
     return {
         "directory": str(p),
-        "total_files": len(py_files),
+        "total_files": len(code_files),
         "files_with_content": len(results),
         "structure": results,
     }
@@ -155,14 +363,15 @@ def _extract_structure(filepath: Path, include_private: bool) -> dict:
 
 @tool(
     name="call_graph",
-    description="分析 Python 文件 / 目录的函数调用关系图。"
+    description="分析源代码文件 / 目录的函数调用关系图。"
+                "支持 Python（完整）和其他语言（tree-sitter 基础分析）。"
                 "识别哪些函数调用了哪些函数，帮助理解代码执行流程和依赖关系。",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Python 文件或目录路径",
+                "description": "源代码文件或目录路径",
             },
             "target_function": {
                 "type": "string",
@@ -178,18 +387,26 @@ def call_graph(path: str, target_function: str = None) -> dict:
     if not p.exists():
         return {"error": f"路径不存在: {path}"}
 
-    # 收集所有 py 文件
+    supported_exts = {".py"} | _TS_SUPPORTED
+
+    # 收集所有源代码文件
     if p.is_file():
-        py_files = [p] if p.suffix == ".py" else []
+        code_files = [p] if p.suffix.lower() in supported_exts else []
     else:
         skip = {".git", "node_modules", "__pycache__", ".venv", "venv"}
-        py_files = sorted(
-            f for f in p.rglob("*.py")
-            if not any(part in skip for part in f.relative_to(p).parts)
+        code_files = sorted(
+            f for f in p.rglob("*")
+            if f.is_file()
+            and f.suffix.lower() in supported_exts
+            and not any(part in skip for part in f.relative_to(p).parts)
         )[:80]
 
-    if not py_files:
-        return {"error": "未找到 Python 文件"}
+    if not code_files:
+        return {"error": "未找到支持的源代码文件"}
+
+    # 分离 Python 和非 Python 文件
+    py_files = [f for f in code_files if f.suffix == ".py"]
+    ts_files = [f for f in code_files if f.suffix.lower() in _TS_SUPPORTED]
 
     base = p if p.is_dir() else p.parent
 
@@ -206,7 +423,18 @@ def call_graph(path: str, target_function: str = None) -> dict:
             elif isinstance(node, ast.ClassDef):
                 all_defs[node.name] = {"file": rel, "line": node.lineno, "type": "class"}
 
-    # 第二遍：收集调用关系
+    # tree-sitter 文件：提取定义
+    for fp in ts_files:
+        info = _ts_extract_structure(fp, include_private=True)
+        if not info:
+            continue
+        rel = str(fp.relative_to(base)) if fp != base else fp.name
+        for func in info.get("functions", []):
+            all_defs[func["name"]] = {"file": rel, "line": func["line"], "type": "function"}
+        for cls in info.get("classes", []):
+            all_defs[cls["name"]] = {"file": rel, "line": cls["line"], "type": "class"}
+
+    # 第二遍：收集调用关系（Python 文件用 AST 精确分析）
     calls = defaultdict(set)   # caller -> {callees}
     callers = defaultdict(set)  # callee -> {callers}
 
@@ -268,14 +496,15 @@ def call_graph(path: str, target_function: str = None) -> dict:
 
 @tool(
     name="complexity_report",
-    description="计算 Python 代码的圈复杂度和认知复杂度，识别需要重构的高复杂度函数。"
+    description="计算代码的圈复杂度和认知复杂度，识别需要重构的高复杂度函数。"
+                "支持 Python（精确计算）和其他语言（tree-sitter 行数估算）。"
                 "高复杂度函数是 bug 密集区，应优先重构。",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Python 文件或目录路径",
+                "description": "源代码文件或目录路径",
             },
             "threshold": {
                 "type": "integer",
@@ -286,52 +515,80 @@ def call_graph(path: str, target_function: str = None) -> dict:
     },
 )
 def complexity_report(path: str, threshold: int = 10) -> dict:
-    """计算代码复杂度报告"""
+    """计算代码复杂度报告（多语言支持）"""
     p = Path(path).resolve()
     if not p.exists():
         return {"error": f"路径不存在: {path}"}
 
+    supported_exts = {".py"} | _TS_SUPPORTED
+
     if p.is_file():
-        py_files = [p] if p.suffix == ".py" else []
+        code_files = [p] if p.suffix.lower() in supported_exts else []
     else:
         skip = {".git", "node_modules", "__pycache__", ".venv", "venv"}
-        py_files = sorted(
-            f for f in p.rglob("*.py")
-            if not any(part in skip for part in f.relative_to(p).parts)
+        code_files = sorted(
+            f for f in p.rglob("*")
+            if f.is_file()
+            and f.suffix.lower() in supported_exts
+            and not any(part in skip for part in f.relative_to(p).parts)
         )[:100]
 
-    if not py_files:
-        return {"error": "未找到 Python 文件"}
+    if not code_files:
+        return {"error": "未找到支持的源代码文件"}
 
     base = p if p.is_dir() else p.parent
     all_functions = []
     file_stats = []
 
-    for fp in py_files:
-        tree = _safe_parse(fp)
-        if not tree:
-            continue
-
+    for fp in code_files:
         rel = str(fp.relative_to(base)) if fp != base else fp.name
         lines = len(fp.read_text(encoding="utf-8", errors="ignore").splitlines())
         funcs_in_file = []
 
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                cc = _cyclomatic_complexity(node)
-                cog = _cognitive_complexity(node)
-                func_lines = (node.end_lineno or node.lineno) - node.lineno + 1
+        if fp.suffix == ".py":
+            # Python：精确 AST 分析
+            tree = _safe_parse(fp)
+            if not tree:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    cc = _cyclomatic_complexity(node)
+                    cog = _cognitive_complexity(node)
+                    func_lines = (node.end_lineno or node.lineno) - node.lineno + 1
+                    info = {
+                        "name": node.name,
+                        "file": rel,
+                        "line": node.lineno,
+                        "lines": func_lines,
+                        "cyclomatic": cc,
+                        "cognitive": cog,
+                    }
+                    if cc >= threshold or cog >= threshold:
+                        info["risk"] = "HIGH"
+                    elif cc >= threshold * 0.6 or cog >= threshold * 0.6:
+                        info["risk"] = "MEDIUM"
+                    all_functions.append(info)
+                    funcs_in_file.append(info)
+        else:
+            # 非 Python：用 tree-sitter 提取函数，行数估算复杂度
+            ts_info = _ts_extract_structure(fp, include_private=True)
+            if not ts_info:
+                continue
+            for func in ts_info.get("functions", []):
+                func_lines = max(func.get("lines", 10), 1)
+                # 简单估算：行数 / 5 作为圈复杂度近似值
+                cc = max(1, func_lines // 5)
                 info = {
-                    "name": node.name,
+                    "name": func["name"],
                     "file": rel,
-                    "line": node.lineno,
+                    "line": func["line"],
                     "lines": func_lines,
                     "cyclomatic": cc,
-                    "cognitive": cog,
+                    "cognitive": cc,  # 无法精确计算，用 cc 近似
                 }
-                if cc >= threshold or cog >= threshold:
+                if cc >= threshold:
                     info["risk"] = "HIGH"
-                elif cc >= threshold * 0.6 or cog >= threshold * 0.6:
+                elif cc >= threshold * 0.6:
                     info["risk"] = "MEDIUM"
                 all_functions.append(info)
                 funcs_in_file.append(info)
@@ -461,3 +718,172 @@ def _cognitive_complexity(node: ast.FunctionDef) -> int:
 
     _walk(node)
     return score
+
+
+# ────────────────── 依赖关系图工具 ──────────────────
+
+
+@tool(
+    name="dependency_graph",
+    description="生成项目的模块级依赖关系图。分析 import 关系，识别循环依赖、"
+                "核心模块（被依赖最多）、叶子模块（无依赖），"
+                "以及分层结构。支持 Python 项目。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "项目根目录路径（默认当前目录）",
+            },
+            "max_depth": {
+                "type": "integer",
+                "description": "最大分析深度（默认 5）",
+            },
+        },
+        "required": [],
+    },
+)
+def dependency_graph(path: str = ".", max_depth: int = 5) -> dict:
+    """生成模块级依赖关系图。"""
+    p = Path(path).resolve()
+    if not p.exists() or not p.is_dir():
+        return {"error": f"目录不存在: {path}"}
+
+    skip = {".git", "node_modules", "__pycache__", ".venv", "venv",
+            "dist", "build", ".tox", ".eggs"}
+
+    # 收集所有 Python 文件
+    py_files = []
+    for f in sorted(p.rglob("*.py")):
+        if any(part in skip for part in f.relative_to(p).parts):
+            continue
+        py_files.append(f)
+        if len(py_files) >= 200:
+            break
+
+    if not py_files:
+        return {"error": "未找到 Python 文件"}
+
+    # 构建模块名映射
+    module_map = {}  # module_dotted_name -> filepath
+    for fp in py_files:
+        rel = fp.relative_to(p)
+        parts = list(rel.parts)
+        if parts[-1] == "__init__.py":
+            parts = parts[:-1]
+        else:
+            parts[-1] = parts[-1].replace(".py", "")
+        mod_name = ".".join(parts)
+        if mod_name:
+            module_map[mod_name] = str(rel)
+
+    # 分析每个模块的 import
+    edges = {}  # module -> set of imported modules
+    for fp in py_files:
+        tree = _safe_parse(fp)
+        if not tree:
+            continue
+        rel = fp.relative_to(p)
+        parts = list(rel.parts)
+        if parts[-1] == "__init__.py":
+            parts = parts[:-1]
+        else:
+            parts[-1] = parts[-1].replace(".py", "")
+        mod_name = ".".join(parts)
+        if not mod_name:
+            continue
+
+        deps = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    # 检查是否为项目内模块
+                    imp = alias.name
+                    for known in module_map:
+                        if imp == known or imp.startswith(known + "."):
+                            deps.add(known)
+                            break
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imp = node.module
+                    for known in module_map:
+                        if imp == known or imp.startswith(known + "."):
+                            deps.add(known)
+                            break
+
+        deps.discard(mod_name)  # 不计自引用
+        if deps:
+            edges[mod_name] = sorted(deps)
+
+    # 统计被依赖次数
+    dep_count = {}  # module -> number of times depended on
+    for mod, deps in edges.items():
+        for d in deps:
+            dep_count[d] = dep_count.get(d, 0) + 1
+
+    # 识别核心模块（被依赖最多）
+    core_modules = sorted(dep_count.items(), key=lambda x: -x[1])[:10]
+
+    # 识别叶子模块（不被其他模块依赖）
+    all_modules = set(module_map.keys())
+    depended_on = set(dep_count.keys())
+    leaf_modules = sorted(all_modules - depended_on)[:20]
+
+    # 循环依赖检测
+    cycles = []
+    visited = set()
+    path_stack = []
+
+    def _find_cycles(node, stack_set):
+        if node in stack_set:
+            # 找到循环
+            cycle_start = path_stack.index(node)
+            cycle = path_stack[cycle_start:] + [node]
+            normalized = tuple(sorted(cycle))
+            if normalized not in visited:
+                visited.add(normalized)
+                cycles.append(cycle)
+            return
+        if node in visited and node not in stack_set:
+            return
+        stack_set.add(node)
+        path_stack.append(node)
+        for dep in edges.get(node, []):
+            _find_cycles(dep, stack_set)
+        path_stack.pop()
+        stack_set.discard(node)
+
+    for mod in sorted(edges.keys()):
+        _find_cycles(mod, set())
+
+    # 分层排序（拓扑序）
+    layers = []
+    remaining = set(edges.keys()) | set(m for deps in edges.values() for m in deps)
+    assigned = set()
+    for _ in range(max_depth):
+        # 当前层：没有未分配依赖的模块
+        layer = []
+        for mod in sorted(remaining - assigned):
+            deps = set(edges.get(mod, []))
+            if deps <= assigned or not deps:
+                layer.append(mod)
+        if not layer:
+            break
+        layers.append(layer)
+        assigned.update(layer)
+
+    # 未分配的（可能有循环依赖）
+    unassigned = sorted((remaining - assigned) & set(edges.keys()))
+    if unassigned:
+        layers.append(unassigned)
+
+    return {
+        "total_modules": len(module_map),
+        "total_edges": sum(len(v) for v in edges.values()),
+        "core_modules": [{"module": m, "depended_by": c} for m, c in core_modules],
+        "leaf_modules": leaf_modules,
+        "cycles": cycles[:10],
+        "has_cycles": len(cycles) > 0,
+        "layers": layers,
+        "graph": {k: v for k, v in sorted(edges.items())[:50]},
+    }

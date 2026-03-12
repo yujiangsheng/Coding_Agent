@@ -24,7 +24,8 @@ _DEFAULT_CONFIG = {
         "name": "qwen3-coder:30b",
         "temperature": 0.3,
         "reflect_temperature": 0.6,
-        "max_iterations": 20,
+        "max_iterations": 50,
+        "token_budget": 0,  # 0 = 无限制; >0 = 单任务最大 token 预算
     },
     "memory": {
         "data_dir": "turing_data",
@@ -39,6 +40,10 @@ _DEFAULT_CONFIG = {
     "output": {"generated_code_dir": "generated_code"},
     "evolution": {"strategy_threshold": 5, "distill_interval": 50},
     "security": {
+        "confirmation_mode": "interactive",
+        "auto_approve": False,
+        "sandbox_mode": "host",
+        "docker_image": "python:3.11-slim",
         "blocked_commands": [
             "rm -rf /",
             "rm -rf ~",

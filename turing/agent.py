@@ -39,16 +39,17 @@ from pathlib import Path
 from typing import Any, Generator
 
 from turing.config import Config
-from turing.prompt import SYSTEM_PROMPT
+from turing.prompt import SYSTEM_PROMPT, get_system_prompt
 from turing.memory.manager import MemoryManager
 from turing.rag.engine import RAGEngine
 from turing.evolution.tracker import EvolutionTracker
 from turing.evolution.metacognition import MetacognitiveEngine
 from turing.llm import ModelRouter, create_provider
 from turing.tools.registry import get_ollama_tool_schemas, execute_tool
+from turing.safety import SafetyGuard, SandboxExecutor, Permission
 
 # 注入全局工具依赖
-from turing.tools import memory_tools, external_tools, evolution_tools, metacognition_tools, mcp_tools
+from turing.tools import memory_tools, external_tools, evolution_tools, metacognition_tools, mcp_tools, agent_tools
 
 # 确保所有工具被注册（import 即触发 @tool 装饰器）
 import turing.tools.file_tools       # noqa: F401
@@ -66,6 +67,8 @@ import turing.tools.ast_tools       # noqa: F401
 import turing.tools.metacognition_tools  # noqa: F401
 import turing.tools.benchmark_tools       # noqa: F401
 import turing.tools.mcp_tools             # noqa: F401
+import turing.tools.agent_tools           # noqa: F401
+import turing.tools.github_tools          # noqa: F401
 
 
 class TuringAgent:
@@ -82,9 +85,21 @@ class TuringAgent:
         self.config = config or Config.load()
         self.model = self.config.get("model.name", "qwen3-coder:30b")
         self.temperature = self.config.get("model.temperature", 0.3)
-        self.max_iterations = self.config.get("model.max_iterations", 20)
+        self.max_iterations = self.config.get("model.max_iterations", 50)
         self.stream_output = self.config.get("model.stream_output", True)
         data_dir = self.config.get("memory.data_dir", "turing_data")
+
+        # ===== P0: 安全防护系统（对标 Claude Code 权限系统 + Devin 沙箱）=====
+        sandbox_mode = self.config.get("security.sandbox_mode", "host")
+        self.safety = SafetyGuard(
+            mode=self.config.get("security.confirmation_mode", "interactive"),
+            auto_approve=self.config.get("security.auto_approve", False),
+        )
+        self.sandbox = SandboxExecutor(
+            mode=sandbox_mode,
+            image=self.config.get("security.docker_image", "python:3.11-slim"),
+            workspace_mount=self.config.get("security.workspace_root") or None,
+        )
 
         # ===== 多 Provider LLM 路由（v2.0 — 对标 Claude Code / Cursor 的多模型支持）=====
         self.llm_router = self._init_llm_router()
@@ -108,6 +123,9 @@ class TuringAgent:
         from turing.tools import benchmark_tools
         benchmark_tools.set_benchmark_runner(self.benchmark)
 
+        # 注入 Agent 实例到子 Agent 工具
+        agent_tools.set_agent_instance(self)
+
         # ===== MCP 集成（v2.1 — 对标 Claude Code 工具扩展协议）=====
         self.mcp = self._init_mcp()
 
@@ -115,6 +133,13 @@ class TuringAgent:
         self._messages: list[dict] = []
         self._task_log: dict = {"actions": [], "outcome": None, "start_time": 0}
         self._initialized = False
+
+        # Token 用量统计（v3.1）
+        self._token_stats: dict = {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "llm_calls": 0,
+        }
         self._session_id: str | None = None
         self._data_dir = data_dir
         self._recent_tool_calls: list[str] = []  # 用于循环检测
@@ -240,6 +265,12 @@ class TuringAgent:
         # 自动索引项目结构（v2.0 — 对标 Cursor / Windsurf 的项目感知）
         self._auto_index_project()
 
+        # P1: 自动加载项目规约文件（v3.2 — 对标 Claude Code CLAUDE.md / Copilot .instructions.md）
+        self._load_project_spec()
+
+        # P1: 加载项目级权限规则（v3.2 — 对标 Claude Code .claude/settings.json）
+        self._load_project_rules()
+
     def _validate_tool_registration(self):
         """验证所有预期工具都已成功注册"""
         from turing.tools.registry import get_all_tools
@@ -296,29 +327,167 @@ class TuringAgent:
             if task_count > 0 and task_count % 10 == 0:
                 self.metacognition.adapt()
                 self.evolution.build_recovery_playbook()
+
+            # 每 20 个任务或首次运行触发竞争力自评
+            if task_count == 0 or (task_count > 0 and task_count % 20 == 0):
+                from turing.evolution.competitive import CompetitiveIntelligence
+                ci = CompetitiveIntelligence(
+                    getattr(self.evolution, "_data_dir", "turing_data")
+                )
+                ci.analyze()
         except Exception:
             pass  # 自演化失败不应影响正常会话
 
     def _auto_index_project(self):
-        """会话启动时自动索引项目结构（v2.0 — 对标 Cursor / Windsurf）
+        """会话启动时自动索引项目结构（v3.1 — 按需上下文检索）
 
-        自动执行 repo_map 生成代码库全貌，注入 system 消息，
-        让 agent 在首次收到用户消息前就已了解项目结构。
+        仅注入轻量级项目摘要（顶层目录），实际代码上下文通过
+        _inject_relevant_context() 在用户提问时按需检索。
         """
         try:
             from turing.tools.registry import execute_tool
             result = execute_tool("repo_map", {})
             repo_map = result.get("map", "") if isinstance(result, dict) else ""
             if repo_map and len(repo_map) > 50:
-                # 截取关键信息（避免过长占满上下文）
-                if len(repo_map) > 4000:
-                    repo_map = repo_map[:4000] + "\n...(结构已截断)..."
+                # 只保留顶层结构摘要（≤1000 字符），避免占满上下文
+                lines = repo_map.splitlines()
+                summary_lines = [l for l in lines if l.count("/") <= 2 or l.count("│") <= 2]
+                summary = "\n".join(summary_lines[:40])
+                if len(summary) > 1000:
+                    summary = summary[:1000] + "\n..."
                 self._messages.append({
                     "role": "system",
-                    "content": f"[项目结构自动索引]\n{repo_map}",
+                    "content": f"[项目结构摘要]\n{summary}",
                 })
         except Exception:
             pass  # 索引失败不影响正常会话
+
+    def _load_project_spec(self):
+        """自动加载项目规约文件（v3.2 — 对标 Claude Code 的 CLAUDE.md）
+
+        按优先级搜索项目根目录中的规约文件：
+        TURING.md > .turing.md > CLAUDE.md > AGENTS.md > .copilot-instructions.md
+        找到后注入为 system 消息，让模型遵循项目级编码约定。
+        """
+        spec_files = [
+            "TURING.md", ".turing.md", "CLAUDE.md",
+            "AGENTS.md", ".copilot-instructions.md",
+            ".github/copilot-instructions.md",
+        ]
+        workspace = self.config.get("security.workspace_root", ".")
+        for fname in spec_files:
+            spec_path = Path(workspace) / fname
+            if spec_path.is_file():
+                try:
+                    content = spec_path.read_text(encoding="utf-8")[:4000]
+                    self._messages.append({
+                        "role": "system",
+                        "content": (
+                            f"[项目规约 — {fname}]\n"
+                            "以下是本项目的编码约定和指令，请严格遵循：\n\n"
+                            f"{content}"
+                        ),
+                    })
+                except Exception:
+                    pass
+                break  # 只加载第一个找到的
+
+    def _load_project_rules(self):
+        """加载项目级安全/权限规则（v3.2 — 对标 Claude Code .claude/settings.json）
+
+        支持 .turing-rules（YAML）定义项目级权限覆盖：
+        - allow_tools: 始终允许的工具列表
+        - deny_tools: 始终拒绝的工具列表
+        - confirm_patterns: 需要确认的命令模式
+        - auto_approve_paths: 自动批准的路径模式
+        """
+        import yaml as _yaml
+        workspace = self.config.get("security.workspace_root", ".")
+        rules_files = [".turing-rules", ".turing-rules.yaml", ".turing-rules.yml"]
+        for fname in rules_files:
+            rules_path = Path(workspace) / fname
+            if rules_path.is_file():
+                try:
+                    rules = _yaml.safe_load(rules_path.read_text(encoding="utf-8")) or {}
+                    self.safety.load_project_rules(rules)
+                except Exception:
+                    pass
+                break
+
+    def _inject_relevant_context(self, user_input: str):
+        """按需检索与用户问题相关的代码上下文（v3.1 — 对标 Cursor / Windsurf）
+
+        利用 RAG 引擎检索最相关的代码片段，仅在需要时注入，
+        避免一次性灌入大量无关代码浪费上下文窗口。
+        """
+        try:
+            results = self.rag.search(user_input, top_k=5)
+            if results:
+                snippets = []
+                for r in results:
+                    meta = r.get("metadata", {})
+                    src = meta.get("source_file", meta.get("source", "?"))
+                    text = r.get("text", r.get("document", ""))
+                    if text and len(text.strip()) > 20:
+                        snippets.append(f"## {src}\n```\n{text[:800]}\n```")
+                if snippets:
+                    context = "\n\n".join(snippets[:5])
+                    self._messages.append({
+                        "role": "system",
+                        "content": f"[按需代码上下文 — 基于 RAG 检索]\n{context}",
+                    })
+                    return len(snippets)
+        except Exception:
+            pass
+        return 0
+
+    def _resolve_at_mentions(self, user_input: str) -> list[str]:
+        """解析用户输入中的 @file / @folder 引用（v3.2 — 对标 Cursor @-mention 语法）
+
+        支持格式：
+        - @path/to/file.py — 注入文件完整内容
+        - @path/to/folder/ — 注入目录结构
+        - @docs — 搜索项目文档
+
+        将引用的文件内容注入为 system 消息，返回已解析的文件路径列表。
+        """
+        import re as _re
+        # 匹配 @后面的路径（非空白字符序列）
+        mentions = _re.findall(r"@([\w./\-]+\.\w+|[\w./\-]+/)", user_input)
+        if not mentions:
+            return []
+
+        workspace = Path(self.config.get("security.workspace_root", "."))
+        resolved = []
+        snippets = []
+
+        for mention in mentions[:5]:  # 限制最多 5 个引用
+            target = workspace / mention
+            if target.is_file():
+                try:
+                    content = target.read_text(encoding="utf-8")[:5000]
+                    snippets.append(f"## @{mention}\n```\n{content}\n```")
+                    resolved.append(str(mention))
+                except Exception:
+                    pass
+            elif target.is_dir():
+                try:
+                    entries = sorted(target.iterdir())[:30]
+                    listing = "\n".join(
+                        f"{'📁 ' if e.is_dir() else '📄 '}{e.name}"
+                        for e in entries
+                    )
+                    snippets.append(f"## @{mention}\n{listing}")
+                    resolved.append(str(mention))
+                except Exception:
+                    pass
+
+        if snippets:
+            self._messages.append({
+                "role": "system",
+                "content": f"[@-mention 引用的文件内容]\n\n" + "\n\n".join(snippets),
+            })
+        return resolved
 
     def chat(self, user_input: str) -> Generator[dict, None, None]:
         """处理一次用户输入，流式返回事件
@@ -335,6 +504,13 @@ class TuringAgent:
         if not self._initialized:
             self.start_session()
 
+        # ===== 阶段 -1：按任务类型精炼 System Prompt（v3.1 — 分段加载）=====
+        detected_type = self._detect_task_type(user_input)
+        if detected_type and detected_type != "general":
+            refined_prompt = get_system_prompt(task_type=detected_type)
+            if self._messages and self._messages[0].get("role") == "system":
+                self._messages[0]["content"] = refined_prompt
+
         # ===== 阶段 0：记忆预加载 =====
         relevant_memories = self.memory.retrieve(
             query=user_input,
@@ -348,6 +524,16 @@ class TuringAgent:
                 "content": f"## 相关记忆（来自历史经验）\n{memory_context}",
             })
             yield {"type": "thinking", "content": f"检索到 {len(relevant_memories)} 条相关记忆"}
+
+        # ===== 阶段 0.3：按需代码上下文检索（v3.1 — 替代全量 repo_map）=====
+        n_ctx = self._inject_relevant_context(user_input)
+        if n_ctx:
+            yield {"type": "thinking", "content": f"按需检索到 {n_ctx} 个相关代码片段"}
+
+        # ===== 阶段 0.35：@-mention 上下文引用（v3.2 — 对标 Cursor @file 语法）=====
+        at_refs = self._resolve_at_mentions(user_input)
+        if at_refs:
+            yield {"type": "thinking", "content": f"解析 @-mention 引用: {len(at_refs)} 个文件"}
 
         # ===== 阶段 0.5：策略注入 =====
         strategy_context = self._load_relevant_strategy(user_input)
@@ -400,15 +586,30 @@ class TuringAgent:
         # 获取元认知估计的任务复杂度（用于模型路由）
         task_complexity = meta_init.get("estimated_complexity", 0.5)
 
-        for iteration in range(self.max_iterations):
+        # 动态迭代上限：根据任务复杂度自适应调整（v3.1）
+        if task_complexity < 0.3:
+            effective_max_iter = min(self.max_iterations, 15)
+        elif task_complexity < 0.7:
+            effective_max_iter = min(self.max_iterations, 30)
+        else:
+            effective_max_iter = self.max_iterations
+
+        for iteration in range(effective_max_iter):
             # 动态温度：根据执行阶段调整
             current_temp = self._get_dynamic_temperature()
+
+            # v3.2: Architect-Editor 双模型路由
+            # 规划阶段（首次迭代 + debugging）使用强模型，执行阶段使用快模型
+            if iteration == 0 or self._current_phase == "debugging":
+                iter_complexity = max(task_complexity, 0.8)  # 路由到 Architect 模型
+            else:
+                iter_complexity = min(task_complexity, 0.4)  # 路由到 Editor 模型
 
             try:
                 if self.stream_output:
                     # 流式输出：通过 LLM Router 路由
                     msg = self._stream_chat(tool_schemas, temperature=current_temp,
-                                            task_complexity=task_complexity)
+                                            task_complexity=iter_complexity)
                     if msg is None:
                         yield {"type": "error", "content": "模型调用失败（流式）"}
                         return
@@ -417,11 +618,38 @@ class TuringAgent:
                         messages=self._messages,
                         tools=tool_schemas if tool_schemas else None,
                         temperature=current_temp,
-                        task_complexity=task_complexity,
+                        task_complexity=iter_complexity,
                     )
             except Exception as e:
                 yield {"type": "error", "content": f"模型调用失败: {e}"}
                 return
+
+            # Token 用量统计（v3.1）
+            self._token_stats["llm_calls"] += 1
+            try:
+                import tiktoken
+                enc = tiktoken.get_encoding("cl100k_base")
+                # 估算输入 tokens
+                input_text = "".join(m.get("content", "") or "" for m in self._messages[:-1] if isinstance(m.get("content"), str))
+                self._token_stats["total_input_tokens"] += len(enc.encode(input_text))
+                # 估算输出 tokens
+                out_text = msg.get("content", "") or ""
+                self._token_stats["total_output_tokens"] += len(enc.encode(out_text))
+            except Exception:
+                pass
+
+            # v3.2: 成本预算控制 — 超出 token 预算时提前终止
+            token_budget = self.config.get("model.token_budget", 0)
+            if token_budget and token_budget > 0:
+                total_used = self._token_stats["total_input_tokens"] + self._token_stats["total_output_tokens"]
+                if total_used > token_budget:
+                    yield {"type": "text", "content": (
+                        f"⚠️ Token 预算已耗尽 ({total_used:,}/{token_budget:,})，任务自动终止。\n"
+                        "可通过 config.yaml 的 model.token_budget 调整预算上限。"
+                    )}
+                    self._task_log["outcome"] = "budget_exceeded"
+                    yield {"type": "done", "token_stats": self.get_token_stats()}
+                    return
 
             self._messages.append(msg)
 
@@ -440,7 +668,7 @@ class TuringAgent:
                 reflection = self._post_task_reflect(user_input)
                 if reflection:
                     yield {"type": "reflection", "data": reflection}
-                yield {"type": "done"}
+                yield {"type": "done", "token_stats": self.get_token_stats()}
                 return
 
             # 执行工具调用（支持并行执行只读工具）
@@ -485,12 +713,28 @@ class TuringAgent:
                     if len(set(last_3)) == 1:
                         yield {"type": "text", "content": "检测到重复工具调用循环，已自动中断。"}
                         self._task_log["outcome"] = "loop_detected"
-                        yield {"type": "done"}
+                        yield {"type": "done", "token_stats": self.get_token_stats()}
                         return
                 # 保留最近 10 个调用签名
                 self._recent_tool_calls = self._recent_tool_calls[-10:]
 
                 yield {"type": "tool_call", "name": tool_name, "args": tool_args}
+
+                # ===== P0: 安全确认检查 =====
+                perm, perm_msg = self.safety.check_permission(tool_name, tool_args)
+                if perm == Permission.DENY:
+                    result = {"error": f"安全策略拒绝执行: {perm_msg}"}
+                    yield {"type": "tool_result", "name": tool_name, "result": result}
+                    continue
+                if perm == Permission.CONFIRM:
+                    approved = self.safety.request_confirmation(
+                        tool_name, tool_args, perm_msg
+                    )
+                    if not approved:
+                        result = {"error": "用户拒绝执行该操作"}
+                        yield {"type": "tool_result", "name": tool_name, "result": result}
+                        self._messages.append({"role": "tool", "content": json.dumps(result, ensure_ascii=False)})
+                        continue
 
                 # 元认知检查点：工具选择监控
                 self.metacognition.checkpoint("tool_selection", {
@@ -553,23 +797,27 @@ class TuringAgent:
                         # === Auto-Commit（对标 Aider 自动提交，支持 undo）===
                         self._auto_checkpoint(tool_name, tool_args)
 
-                        # === Auto Lint-Fix（对标 Aider 编辑后自动修复）===
+                        # === ETF 三重验证（v3.2 — 对标 Claude Code 编辑后自动质量检查）===
                         edited_path = result.get("path", tool_args.get("path", ""))
                         if edited_path and edited_path.endswith(".py"):
+                            # 1) Auto Lint-Fix
                             lint_result = self._auto_lint_fix(edited_path)
                             if lint_result:
                                 yield {"type": "tool_result", "name": "auto_lint_fix", "result": lint_result}
+                            # 2) Auto Type-Check
+                            type_result = self._auto_type_check(edited_path)
+                            if type_result:
+                                yield {"type": "tool_result", "name": "auto_type_check", "result": type_result}
 
-                        # 注入 ETF 提示
+                        # 注入 ETF 提示（含三重验证指引）
                         if not any("请运行测试或验证" in m.get("content", "") for m in self._messages[-3:]):
+                            etf_hints = ["代码已修改。请执行 ETF 三重验证循环："]
+                            etf_hints.append("1. run_tests 运行相关测试")
+                            etf_hints.append("2. 检查 lint 和类型检查结果")
+                            etf_hints.append("3. 如果任何步骤失败，分析原因并修复后重新验证")
                             self._messages.append({
                                 "role": "system",
-                                "content": (
-                                    "代码已修改。请执行 ETF 验证循环：\n"
-                                    "1. run_tests 运行相关测试\n"
-                                    "2. 或 run_command 验证功能\n"
-                                    "3. 如果失败，分析原因并修复后重新验证"
-                                ),
+                                "content": "\n".join(etf_hints),
                             })
 
                 yield {"type": "tool_result", "name": tool_name, "result": result}
@@ -613,7 +861,7 @@ class TuringAgent:
         if reflection:
             yield {"type": "reflection", "data": reflection}
         yield {"type": "text", "content": f"已达到最大迭代次数（{self.max_iterations}），任务可能未完全完成。"}
-        yield {"type": "done"}
+        yield {"type": "done", "token_stats": self.get_token_stats()}
 
     def _post_task_reflect(self, user_request: str) -> dict | None:
         """任务后自动反思 —— 使用 LLM 进行深度反思"""
@@ -749,6 +997,23 @@ class TuringAgent:
             "what_went_well": "任务完成" if outcome == "success" else "",
             "what_could_improve": "反思 LLM 调用失败，需检查模型连接",
         }
+
+    def _detect_task_type(self, user_input: str) -> str:
+        """根据用户输入快速检测任务类型，用于 System Prompt 分段加载"""
+        input_lower = user_input.lower()
+        type_keywords = {
+            "bug_fix": ["bug", "fix", "修复", "报错", "error", "crash", "异常"],
+            "feature": ["feature", "功能", "新增", "添加", "implement", "实现", "开发"],
+            "refactor": ["refactor", "重构", "优化", "clean", "改进", "性能"],
+            "debug": ["debug", "调试", "排查", "排错", "定位", "timeout", "超时"],
+            "explain": ["explain", "解释", "什么是", "原理", "how does", "为什么"],
+            "test": ["test", "测试", "coverage", "覆盖率", "unittest", "pytest"],
+            "review": ["review", "审查", "code review", "代码审查", "pr"],
+        }
+        for task_type, keywords in type_keywords.items():
+            if any(k in input_lower for k in keywords):
+                return task_type
+        return "general"
 
     def _load_relevant_strategy(self, user_input: str) -> str | None:
         """根据用户输入的任务描述，加载匹配的已进化策略模板"""
@@ -1091,6 +1356,38 @@ class TuringAgent:
         except Exception:
             return None
 
+    def _auto_type_check(self, filepath: str) -> dict | None:
+        """编辑后自动运行类型检查（v3.2 — ETF 三重验证之二）
+
+        静默运行 mypy/pyright 检查类型错误，信息反馈给模型以便修复。
+        """
+        import subprocess
+        import shutil
+
+        checker = shutil.which("mypy") or shutil.which("pyright")
+        if not checker:
+            return None
+
+        checker_name = Path(checker).name
+        try:
+            check = subprocess.run(
+                [checker, filepath, "--no-error-summary"] if checker_name == "mypy"
+                else [checker, filepath],
+                capture_output=True, text=True, timeout=30,
+            )
+            if check.returncode == 0:
+                return {"auto_type_check": "ok", "checker": checker_name, "file": filepath}
+
+            issues = check.stdout.strip().split("\n")
+            return {
+                "auto_type_check": "issues_found",
+                "checker": checker_name,
+                "count": len(issues),
+                "details": "\n".join(issues[:10]),
+            }
+        except Exception:
+            return None
+
     def _auto_checkpoint(self, tool_name: str, tool_args: dict):
         """每次编辑后自动 git 提交（对标 Aider 的 auto-commit + /undo）
 
@@ -1157,9 +1454,10 @@ class TuringAgent:
         return None
 
     def _summarize_tool_result(self, tool_name: str, result_str: str) -> str:
-        """语义压缩工具结果（对标 Claude 的智能上下文管理）
+        """语义压缩工具结果（v3.5 — 增强型内容感知压缩）
 
         对不同工具使用不同的压缩策略，保留语义关键信息。
+        v3.5 新增：AST/结构化输出保留签名、依赖图保留拓扑、自动修复保留 diff。
         """
         max_len = 12000
         if len(result_str) <= max_len:
@@ -1178,8 +1476,8 @@ class TuringAgent:
             # 文件内容：保留开头（导入+声明）+ 搜索上下文附近 + 结尾
             return result_str[:5000] + "\n...(文件中部省略)...\n" + result_str[-4000:]
 
-        elif tool_name in ("run_command", "run_tests"):
-            # 命令/测试输出：保留错误信息和结尾摘要
+        elif tool_name in ("run_command", "run_tests", "auto_fix"):
+            # 命令/测试/自动修复输出：保留错误信息和结尾摘要
             lines = result_str.split("\n")
             error_lines = [l for l in lines if any(
                 kw in l.lower() for kw in ["error", "fail", "traceback", "exception", "错误"]
@@ -1191,18 +1489,34 @@ class TuringAgent:
                         f"[输出尾部]\n{tail}")
             return result_str[:6000] + "\n...(截断)...\n" + result_str[-4000:]
 
-        elif tool_name in ("git_diff", "git_log"):
+        elif tool_name in ("git_diff", "git_log", "pr_summary"):
             # Git 输出：保留文件变更摘要 + 关键差异
             return result_str[:8000] + "\n...(截断)...\n" + result_str[-3000:]
+
+        elif tool_name in ("code_structure", "call_graph", "dependency_graph"):
+            # AST/结构化输出：保留签名列表和拓扑摘要
+            lines = result_str.split("\n")
+            sig_lines = [l for l in lines if any(
+                kw in l for kw in ["def ", "class ", "→", "->", "Layer", "Core", "Leaf", "Circular"]
+            )]
+            if sig_lines:
+                summary = "\n".join(sig_lines[:80])
+                return (f"[结构化摘要]\n{summary}\n\n"
+                        f"[原始 {len(result_str)} 字符，保留 {len(sig_lines)} 条关键行]")
+            return result_str[:8000] + "\n...(截断)...\n" + result_str[-3000:]
+
+        elif tool_name == "context_compress":
+            # 压缩结果本身不应再被压缩
+            return result_str[:10000]
 
         else:
             return result_str[:8000] + "\n...(截断)...\n" + result_str[-3000:]
 
     def _check_context_overflow(self):
-        """Token-aware 智能上下文管理（v2.0 — 对标 Claude Code / Cursor 的上下文窗口管理）
+        """Token-aware 智能上下文管理（v3.0 — 对标 Claude Code / Cursor 的上下文窗口管理）
 
-        v2.0 改进：
-        - 基于 token 估算（~3.5 字符/token 中英混合）替代字符计数
+        v3.0 改进：
+        - 基于 tiktoken 精确计算 token 数（fallback 到字符估算）
         - 消息级优先级打分，精确控制保留/丢弃顺序
         - 渐进式多层压缩（工具压缩 → 历史折叠 → 尾部裁切）
         - 保护关键信息：系统提示 > 最近用户消息 > 错误工具结果 > 最近助手 > 旧工具结果
@@ -1217,8 +1531,18 @@ class TuringAgent:
         - 早期 tool          → 10（可丢弃）
         """
 
+        # 使用 tiktoken 精确计算 token 或 fallback 到字符估算
+        _tiktoken_enc = None
+        try:
+            import tiktoken
+            _tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+        except (ImportError, Exception):
+            pass
+
         def _estimate_tokens(text: str) -> int:
-            """估算 token 数（中英混合 ~3.5 字符/token）"""
+            if _tiktoken_enc is not None:
+                return len(_tiktoken_enc.encode(text, disallowed_special=()))
+            # fallback: 中英混合 ~3.5 字符/token
             return max(1, int(len(text) / 3.5))
 
         def _msg_tokens(msg: dict) -> int:
@@ -1375,60 +1699,27 @@ class TuringAgent:
         """获取记忆系统统计"""
         return self.memory.get_stats()
 
-    def compact(self) -> dict:
-        """主动压缩上下文（对标 Claude Code 的 /compact 命令）
+    def get_token_stats(self) -> dict:
+        """获取本轮会话的 token 用量统计（v3.1）"""
+        return dict(self._token_stats)
 
-        使用 LLM 将整个对话历史压缩为精简摘要，
-        释放上下文空间以继续长时间对话。
+    def compact(self) -> dict:
+        """主动压缩上下文（v3.2 — 对标 Claude Code 的 /compact 命令）
+
+        优先使用 LLM 生成高质量对话摘要，失败时降级为机械提取。
         """
         if len(self._messages) <= 3:
             return {"status": "skip", "reason": "对话太短，无需压缩"}
 
-        # 收集对话中的关键信息
-        file_edits = []
-        tools_used = set()
-        errors = []
-        user_requests = []
-        assistant_replies = []
-
-        for m in self._messages[1:]:  # 跳过 system prompt
-            role = m.get("role", "")
-            content = m.get("content", "")
-            if role == "user":
-                user_requests.append(content[:200])
-            elif role == "assistant" and content:
-                assistant_replies.append(content[:150])
-            elif role == "tool":
-                if "error" in content.lower():
-                    errors.append(content[:100])
-                if '"path"' in content or '"status": "ok"' in content:
-                    file_edits.append(content[:80])
-            # 提取工具调用信息
-            for tc in m.get("tool_calls", []):
-                func = tc.get("function", {})
-                tools_used.add(func.get("name", ""))
-
-        # 构建压缩摘要
-        summary_lines = ["[上下文压缩摘要]"]
-        summary_lines.append(f"对话轮次: {len(user_requests)}")
-        summary_lines.append(f"使用工具: {', '.join(sorted(tools_used))}")
-
-        if user_requests:
-            summary_lines.append("用户请求:")
-            for i, req in enumerate(user_requests[-5:], 1):
-                summary_lines.append(f"  {i}. {req}")
-
-        if file_edits:
-            summary_lines.append(f"文件操作: {len(file_edits)} 次编辑")
-        if errors:
-            summary_lines.append(f"遇到错误: {len(errors)} 个")
-
-        if assistant_replies:
-            summary_lines.append(f"最近回复: {assistant_replies[-1]}")
-
-        summary_text = "\n".join(summary_lines)
         old_count = len(self._messages)
         old_chars = sum(len(json.dumps(m, ensure_ascii=False, default=str)) for m in self._messages)
+
+        # 尝试使用 LLM 生成高质量摘要
+        summary_text = self._llm_summarize_conversation()
+
+        if not summary_text:
+            # 降级：机械提取摘要
+            summary_text = self._mechanical_summary()
 
         # 重建消息：system prompt + 摘要 + 最近 4 条消息
         system_prompt = self._messages[0]
@@ -1449,6 +1740,77 @@ class TuringAgent:
             "chars_after": new_chars,
             "compression_ratio": f"{(1 - new_chars / max(old_chars, 1)):.0%}",
         }
+
+    def _llm_summarize_conversation(self) -> str | None:
+        """使用 LLM 生成对话摘要（v3.2 — 对标 Claude Code 的智能压缩）"""
+        try:
+            # 收集对话内容（限制输入大小）
+            conv_text = []
+            for m in self._messages[1:]:  # 跳过 system prompt
+                role = m.get("role", "")
+                content = m.get("content", "") or ""
+                if isinstance(content, str) and content.strip():
+                    conv_text.append(f"[{role}] {content[:300]}")
+            dialog = "\n".join(conv_text[-30:])  # 最近 30 条
+
+            summary_prompt = [
+                {"role": "system", "content": "你是一个对话摘要助手。"},
+                {"role": "user", "content": (
+                    "请将以下编程对话历史压缩为简洁的摘要，保留：\n"
+                    "1. 用户的核心需求和目标\n"
+                    "2. 已完成的操作（修改了哪些文件、执行了什么命令）\n"
+                    "3. 当前进展状态和未完成的任务\n"
+                    "4. 遇到的关键错误及其解决方案\n\n"
+                    f"对话历史:\n{dialog}\n\n"
+                    "请用中文输出结构化的摘要（500字以内）："
+                )},
+            ]
+
+            result = self.llm_router.chat(
+                messages=summary_prompt,
+                temperature=0.2,
+                task_complexity=0.2,
+            )
+            summary = result.get("content", "")
+            if summary and len(summary) > 50:
+                return f"[LLM 智能压缩摘要]\n{summary}"
+        except Exception:
+            pass
+        return None
+
+    def _mechanical_summary(self) -> str:
+        """机械提取对话摘要（降级模式）"""
+        tools_used = set()
+        user_requests = []
+        errors = []
+        file_edits = []
+
+        for m in self._messages[1:]:
+            role = m.get("role", "")
+            content = m.get("content", "") or ""
+            if role == "user":
+                user_requests.append(content[:200])
+            elif role == "tool":
+                if "error" in content.lower():
+                    errors.append(content[:100])
+                if '"path"' in content or '"status": "ok"' in content:
+                    file_edits.append(content[:80])
+            for tc in m.get("tool_calls", []):
+                func = tc.get("function", {})
+                tools_used.add(func.get("name", ""))
+
+        lines = ["[上下文压缩摘要]"]
+        lines.append(f"对话轮次: {len(user_requests)}")
+        lines.append(f"使用工具: {', '.join(sorted(tools_used))}")
+        if user_requests:
+            lines.append("用户请求:")
+            for i, req in enumerate(user_requests[-5:], 1):
+                lines.append(f"  {i}. {req}")
+        if file_edits:
+            lines.append(f"文件操作: {len(file_edits)} 次编辑")
+        if errors:
+            lines.append(f"遇到错误: {len(errors)} 个")
+        return "\n".join(lines)
 
     def get_evolution_stats(self) -> dict:
         """获取演化统计"""
@@ -1565,3 +1927,75 @@ class TuringAgent:
                 continue
 
         return sessions
+
+    # ===== P1: 子 Agent 编排（对标 Devin 多角色协作 / Copilot Agent 子任务委派）=====
+
+    def spawn_sub_agent(self, sub_task: str, tools_subset: list[str] | None = None,
+                        max_iterations: int = 15) -> dict:
+        """分派子任务到子 Agent 执行
+
+        用于将复杂任务分解后的子步骤委派给独立 Agent 实例，
+        子 Agent 拥有独立的消息历史和迭代限制。
+
+        Args:
+            sub_task: 子任务描述
+            tools_subset: 限制子 Agent 可用的工具列表（None = 全部）
+            max_iterations: 子 Agent 最大迭代次数
+
+        Returns:
+            {"status": "ok/error", "result": "...", "actions": [...]}
+        """
+        # 创建轻量级子 Agent（共享 config/memory/llm，但独立消息历史）
+        sub = TuringAgent.__new__(TuringAgent)
+        sub.config = self.config
+        sub.model = self.model
+        sub.temperature = self.temperature
+        sub.max_iterations = max_iterations
+        sub.stream_output = False
+        sub.llm_router = self.llm_router
+        sub.memory = self.memory
+        sub.rag = self.rag
+        sub.evolution = self.evolution
+        sub.metacognition = self.metacognition
+        sub.benchmark = self.benchmark
+        sub.mcp = self.mcp
+        sub.safety = self.safety
+        sub.sandbox = self.sandbox
+        sub._data_dir = self._data_dir
+        sub._messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        sub._task_log = {"actions": [], "outcome": None, "start_time": time.time()}
+        sub._initialized = True
+        sub._session_id = None
+        sub._recent_tool_calls = []
+        sub._current_phase = "execution"
+        sub._etf_retry_count = 0
+        sub._error_history = []
+
+        # 收集子 Agent 执行结果
+        final_text = []
+        tool_results = []
+        try:
+            for event in sub.chat(sub_task):
+                if event["type"] == "text":
+                    final_text.append(event["content"])
+                elif event["type"] == "tool_result":
+                    tool_results.append({
+                        "tool": event["name"],
+                        "success": "error" not in event.get("result", {}),
+                    })
+                elif event["type"] == "error":
+                    return {
+                        "status": "error",
+                        "error": event["content"],
+                        "actions": sub._task_log["actions"],
+                    }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+        return {
+            "status": "ok",
+            "result": "\n".join(final_text),
+            "outcome": sub._task_log.get("outcome", "unknown"),
+            "actions_count": len(sub._task_log["actions"]),
+            "tools_used": list(set(a["tool"] for a in sub._task_log["actions"])),
+        }

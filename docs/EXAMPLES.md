@@ -1,6 +1,6 @@
 # 使用示例
 
-> Turing v1.0.0 — 54 工具 · 13 模块 · 15 维评分
+> Turing v3.5.0 — 80 工具 · 19 模块 · 15 维评分 · 竞争力分析 · LSP 服务
 
 ## 目录
 
@@ -24,6 +24,14 @@
 18. [原子化多文件编辑 (v1.0)](#18-原子化多文件编辑-v10)
 19. [上下文压缩与撤销 (v1.0)](#19-上下文压缩与撤销-v10)
 20. [Diff 预览与 Repo Map (v1.0)](#20-diff-预览与-repo-map-v10)
+21. [依赖图分析 (v3.5)](#21-依赖图分析-v35)
+22. [自动修复 Lint 错误 (v3.5)](#22-自动修复-lint-错误-v35)
+23. [假设验证调试 (v3.5)](#23-假设验证调试-v35)
+24. [上下文压缩与预算管理 (v3.5)](#24-上下文压缩与预算管理-v35)
+25. [竞争力基准评测 (v3.4)](#25-竞争力基准评测-v34)
+26. [任务规划与 PR 摘要 (v3.4)](#26-任务规划与-pr-摘要-v34)
+27. [安全扫描 (v3.4)](#27-安全扫描-v34)
+28. [Checkpoint 工作流 (v3.3)](#28-checkpoint-工作流-v33)
 
 ---
 
@@ -676,7 +684,7 @@ You > 生成项目的 Repo Map
 │ │   ├── working.py                             │
 │ │   │   └── class WorkingMemory                │
 │ │   └── ...                                    │
-│ └── tools/ (13 modules, 54 tools)              │
+│ └── tools/ (19 modules, 80 tools)              │
 └──────────────────────────────────────────────┘
 ```
 
@@ -686,12 +694,12 @@ You > 生成项目的 Repo Map
 You > 运行测试并生成覆盖率报告
 
 🔧 调用工具: run_tests {"path": ".", "coverage": true}
-   ✓ {"exit_code": 0, "output": "19 passed",
+   ✓ {"exit_code": 0, "output": "21 passed",
       "coverage": {"total": 78, "files": {"agent.py": 82, "config.py": 95, ...}},
       "failures": []}
 
 ┌─ Turing ─────────────────────────────────────┐
-│ 测试结果：19 通过 / 0 失败                     │
+│ 测试结果：21 通过 / 0 失败                     │
 │ 整体覆盖率：78%                                │
 │ • agent.py: 82%                                │
 │ • config.py: 95%                               │
@@ -699,6 +707,197 @@ You > 运行测试并生成覆盖率报告
 └──────────────────────────────────────────────┘
 ```
 
+## 21. 依赖图分析 (v3.5)
+
+```
+You > 分析项目的模块依赖关系
+
+🔧 调用工具: dependency_graph {"path": "turing", "format": "text"}
+   ✓ {"graph": {"nodes": 19, "edges": 42, "cycles": []}, ...}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 模块依赖图分析完成：                            │
+│ • 19 个模块，42 条依赖关系                      │
+│ • 未检测到循环依赖 ✓                            │
+│ • 核心模块: agent.py (入度最高, 12 个依赖)      │
+│ • 叶模块: ast_tools.py (无出度依赖)             │
+└──────────────────────────────────────────────┘
+```
+
+## 22. 自动修复 Lint 错误 (v3.5)
+
+```
+You > 自动修复项目中的 lint 错误
+
+🔧 调用工具: auto_fix {"path": ".", "fix_types": ["lint", "import"]}
+   ✓ {"fixed": 8, "files_modified": 3, "details": [...]}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 自动修复完成：                                  │
+│ • 修复 8 个问题，涉及 3 个文件                  │
+│ • F401 未使用导入: 4 处                         │
+│ • E302 空行不足: 2 处                           │
+│ • W291 行尾空格: 2 处                           │
+└──────────────────────────────────────────────┘
+```
+
+## 23. 假设验证调试 (v3.5)
+
+```
+You > 我怀疑 config.py 的 _deep_merge 方法在处理空字典时有 bug
+
+🔧 调用工具: verify_hypothesis {
+     "hypothesis": "_deep_merge 在 base 为空 dict 时跳过 override 值",
+     "evidence_commands": [
+       "grep -n '_deep_merge' turing/config.py",
+       "python -c \"from turing.config import Config; print(Config._deep_merge({}, {'a': 1}))\""
+     ]
+   }
+   ✓ {"verdict": "refuted", "confidence": 0.95,
+      "evidence": "空字典正确合并，返回 {'a': 1}",
+      "suggestion": "检查是否是 None 值而非空字典导致的问题"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 假设验证结果：❌ 已否定（置信度 95%）             │
+│ • _deep_merge({}, {'a': 1}) 正确返回 {'a': 1}  │
+│ • 建议：检查传入的是否为 None 而非空 dict        │
+└──────────────────────────────────────────────┘
+```
+
+## 24. 上下文压缩与预算管理 (v3.5)
+
+```
+You > 当前上下文预算还剩多少？
+
+🔧 调用工具: context_budget {}
+   ✓ {"total_tokens": 128000, "used_tokens": 45200,
+      "remaining_tokens": 82800, "usage_percent": 35.3}
+
+You > 压缩当前上下文，保留最关键的信息
+
+🔧 调用工具: context_compress {"strategy": "relevance", "target_ratio": 0.5}
+   ✓ {"before_tokens": 45200, "after_tokens": 22100,
+      "removed_items": 12, "kept_items": 18}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 上下文压缩完成：                                │
+│ • 压缩前: 45,200 tokens (35.3%)                │
+│ • 压缩后: 22,100 tokens (17.3%)                │
+│ • 移除 12 项低相关性内容，保留 18 项核心上下文   │
+└──────────────────────────────────────────────┘
+```
+
+## 25. 竞争力基准评测 (v3.4)
+
+```
+You > 评估 Turing 和其他 AI Agent 的差距
+
+🔧 调用工具: competitive_benchmark {}
+   ✓ {"rank": 1, "total": 8, "score": 0.864,
+      "competitors": [...], "gaps": [...]}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 竞争力评测结果：                                │
+│ 🏆 排名: 1/8（得分 0.864）                     │
+│                                                │
+│ 对标分析（前 3）：                               │
+│ 1. Turing     0.864  ██████████████████░░       │
+│ 2. Cursor     0.850  █████████████████░░░       │
+│ 3. Copilot    0.840  █████████████████░░░       │
+│                                                │
+│ 关键差距：                                      │
+│ • real_time_completion: 0.40 vs 竞品 0.95       │
+│ • 建议：集成 LSP 实时补全提升该维度              │
+└──────────────────────────────────────────────┘
+```
+
+## 26. 任务规划与 PR 摘要 (v3.4)
+
+### 任务规划
+
+```
+You > 我需要给项目添加 WebSocket 支持
+
+🔧 调用工具: task_plan {"task": "添加 WebSocket 实时通信支持"}
+   ✓ {"steps": [...], "estimated_complexity": "medium"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 任务计划（4 步）：                               │
+│ 1. 安装 flask-socketio 依赖                     │
+│ 2. 修改 web/server.py 添加 SocketIO 事件处理    │
+│ 3. 更新 web/static/js/app.js 前端 WS 连接       │
+│ 4. 添加连接/断开/消息测试用例                    │
+└──────────────────────────────────────────────┘
+```
+
+### PR 摘要
+
+```
+You > 为当前分支生成 PR 摘要
+
+🔧 调用工具: pr_summary {"base": "main"}
+   ✓ {"title": "...", "summary": "...", "changes": [...]}
+
+┌─ PR Summary ─────────────────────────────────┐
+│ feat: 添加竞争力分析引擎与 LSP 服务             │
+│                                                │
+│ ## 变更概述                                     │
+│ 新增 4 个工具，实现竞争力自评与代码补全          │
+│                                                │
+│ ## 文件变更 (12 files)                          │
+│ + turing/evolution/competitive.py (新增)        │
+│ + turing/lsp/__init__.py (新增)                 │
+│ ~ turing/tools/evolution_tools.py (修改)        │
+│ ~ turing/tools/search_tools.py (修改)           │
+│ ...                                             │
+└──────────────────────────────────────────────┘
+```
+
+## 27. 安全扫描 (v3.4)
+
+```
+You > 扫描项目中的安全隐患
+
+🔧 调用工具: security_scan {"path": "."}
+   ✓ {"issues": [...], "severity_counts": {"high": 0, "medium": 1, "low": 2}}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 安全扫描结果：                                  │
+│ • 高危: 0 ✓                                    │
+│ • 中危: 1 — web/server.py:25 未设置 CORS 限制   │
+│ • 低危: 2 — 硬编码默认端口、DEBUG 模式未关闭     │
+│ 建议：添加 CORS 白名单，生产环境关闭 DEBUG       │
+└──────────────────────────────────────────────┘
+```
+
+## 28. Checkpoint 工作流 (v3.3)
+
+```
+You > 保存当前工作状态
+
+🔧 调用工具: checkpoint_save {"label": "feature-websocket-v1"}
+   ✓ {"checkpoint_id": "chk_20250701_143022", "label": "feature-websocket-v1"}
+
+You > 查看已保存的检查点
+
+🔧 调用工具: checkpoint_list {}
+   ✓ {"checkpoints": [
+        {"id": "chk_20250701_143022", "label": "feature-websocket-v1", "time": "14:30:22"},
+        {"id": "chk_20250701_120015", "label": "pre-refactor", "time": "12:00:15"}
+      ]}
+
+You > 恢复到之前的检查点
+
+🔧 调用工具: checkpoint_restore {"checkpoint_id": "chk_20250701_120015"}
+   ✓ {"restored": true, "label": "pre-refactor"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 已恢复到检查点: pre-refactor (12:00:15)         │
+│ • 工作记忆已回滚 ✓                              │
+│ • 元认知状态已恢复 ✓                            │
+└──────────────────────────────────────────────┘
+```
+
 ---
 
-*文档版本: v1.0.0 · 最后更新: 2025-07*
+*文档版本: v3.5.0 · 最后更新: 2025-07*

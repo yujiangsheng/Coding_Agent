@@ -162,17 +162,64 @@ def detect_project(path: str = ".") -> dict:
         result["build_system"] = "Gradle"
 
     # --- CI/CD ---
-    ci_files = [".github/workflows", ".gitlab-ci.yml", "Jenkinsfile", ".circleci",
-                ".travis.yml", "azure-pipelines.yml"]
-    for ci in ci_files:
-        if (p / ci).exists():
+    ci_configs = {
+        ".github/workflows": "GitHub Actions",
+        ".gitlab-ci.yml": "GitLab CI",
+        "Jenkinsfile": "Jenkins",
+        ".circleci": "CircleCI",
+        ".travis.yml": "Travis CI",
+        "azure-pipelines.yml": "Azure Pipelines",
+        "bitbucket-pipelines.yml": "Bitbucket Pipelines",
+    }
+    ci_details = []
+    for ci_path, ci_name in ci_configs.items():
+        ci_full = p / ci_path
+        if ci_full.exists():
             result["has_ci"] = True
-            result["config_files"].append(ci)
-            break
+            result["config_files"].append(ci_path)
+            ci_info = {"provider": ci_name, "path": ci_path}
+            # 提取 GitHub Actions workflow 名称
+            if ci_name == "GitHub Actions" and ci_full.is_dir():
+                workflows = list(ci_full.glob("*.yml")) + list(ci_full.glob("*.yaml"))
+                ci_info["workflows"] = [w.name for w in workflows[:10]]
+            ci_details.append(ci_info)
+    result["ci_details"] = ci_details
 
     # --- Docker ---
-    if (p / "Dockerfile").exists() or (p / "docker-compose.yml").exists() or (p / "docker-compose.yaml").exists():
+    docker_files = []
+    if (p / "Dockerfile").exists():
         result["has_docker"] = True
+        docker_files.append("Dockerfile")
+    if (p / "docker-compose.yml").exists() or (p / "docker-compose.yaml").exists():
+        result["has_docker"] = True
+        docker_files.append("docker-compose.yml")
+    if (p / ".dockerignore").exists():
+        docker_files.append(".dockerignore")
+    result["docker_files"] = docker_files
+
+    # --- Monorepo ---
+    is_monorepo = False
+    monorepo_tool = None
+    if (p / "lerna.json").exists():
+        is_monorepo = True
+        monorepo_tool = "Lerna"
+    elif (p / "nx.json").exists():
+        is_monorepo = True
+        monorepo_tool = "Nx"
+    elif (p / "pnpm-workspace.yaml").exists():
+        is_monorepo = True
+        monorepo_tool = "pnpm workspaces"
+    elif (p / "package.json").exists():
+        try:
+            pkg = json.loads((p / "package.json").read_text(errors="ignore"))
+            if "workspaces" in pkg:
+                is_monorepo = True
+                monorepo_tool = "npm/yarn workspaces"
+        except Exception:
+            pass
+    result["is_monorepo"] = is_monorepo
+    if monorepo_tool:
+        result["monorepo_tool"] = monorepo_tool
 
     # --- 入口点 ---
     entry_candidates = ["main.py", "app.py", "manage.py", "index.js", "index.ts",
@@ -319,3 +366,117 @@ def analyze_dependencies(path: str = ".") -> dict:
 
     result["total_count"] = len(result["dependencies"]) + len(result["dev_dependencies"])
     return result
+
+
+# ────────────────── 任务规划工具 ──────────────────
+
+
+@tool(
+    name="task_plan",
+    description="将复杂任务拆解为结构化的子任务列表，包含依赖关系、预估风险、"
+                "验证标准。输出可直接作为执行计划使用。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_description": {
+                "type": "string",
+                "description": "任务描述",
+            },
+            "project_path": {
+                "type": "string",
+                "description": "项目路径（可选，用于检测项目上下文）",
+            },
+            "max_steps": {
+                "type": "integer",
+                "description": "最大步骤数（默认 10）",
+            },
+        },
+        "required": ["task_description"],
+    },
+)
+def task_plan(task_description: str, project_path: str = ".", max_steps: int = 10) -> dict:
+    """生成结构化任务执行计划。"""
+    from pathlib import Path
+
+    # 通过关键词检测任务类型
+    desc_lower = task_description.lower()
+    task_type = "general"
+    if any(kw in desc_lower for kw in ["bug", "fix", "error", "issue", "crash"]):
+        task_type = "bug_fix"
+    elif any(kw in desc_lower for kw in ["refactor", "重构", "restructure", "clean"]):
+        task_type = "refactor"
+    elif any(kw in desc_lower for kw in ["feature", "add", "implement", "新增", "功能"]):
+        task_type = "feature"
+    elif any(kw in desc_lower for kw in ["test", "测试", "coverage"]):
+        task_type = "testing"
+    elif any(kw in desc_lower for kw in ["deploy", "ci", "cd", "pipeline"]):
+        task_type = "devops"
+
+    # 通用步骤模板
+    templates = {
+        "bug_fix": [
+            {"step": "复现问题", "action": "根据描述复现 bug，确认错误行为", "risk": "low", "verify": "确认能稳定复现"},
+            {"step": "定位根因", "action": "使用 smart_context + search_code 追踪错误堆栈", "risk": "low", "verify": "找到问题代码位置"},
+            {"step": "分析影响", "action": "用 impact_analysis 评估修改影响范围", "risk": "low", "verify": "确认无级联风险"},
+            {"step": "实施修复", "action": "edit_file 修改代码", "risk": "medium", "verify": "代码逻辑正确"},
+            {"step": "运行测试", "action": "run_tests 验证修复", "risk": "low", "verify": "全部测试通过"},
+            {"step": "回归验证", "action": "确认修复不引入新问题", "risk": "low", "verify": "无新增失败"},
+        ],
+        "feature": [
+            {"step": "需求分析", "action": "明确输入输出、边界条件、依赖关系", "risk": "low", "verify": "需求清晰完整"},
+            {"step": "项目理解", "action": "repo_map + detect_project 了解代码结构", "risk": "low", "verify": "了解相关模块"},
+            {"step": "接口设计", "action": "设计函数签名、数据结构、模块划分", "risk": "medium", "verify": "设计合理可扩展"},
+            {"step": "实现功能", "action": "edit_file / write_file 编写代码", "risk": "medium", "verify": "代码实现完整"},
+            {"step": "编写测试", "action": "generate_tests 生成测试用例", "risk": "low", "verify": "覆盖关键路径"},
+            {"step": "集成验证", "action": "run_tests + lint_code 验证质量", "risk": "low", "verify": "测试通过、无 lint 问题"},
+        ],
+        "refactor": [
+            {"step": "健康评估", "action": "complexity_report + code_structure 分析当前状态", "risk": "low", "verify": "识别问题热点"},
+            {"step": "测试基线", "action": "run_tests 建立测试基线", "risk": "low", "verify": "记录当前测试结果"},
+            {"step": "重构规划", "action": "确定重构策略和步骤顺序", "risk": "medium", "verify": "计划合理可回退"},
+            {"step": "逐步重构", "action": "小步迭代，每步都运行测试", "risk": "high", "verify": "每步测试通过"},
+            {"step": "最终验证", "action": "run_tests + complexity_report 对比改善", "risk": "low", "verify": "质量指标提升"},
+        ],
+        "testing": [
+            {"step": "覆盖分析", "action": "确定当前测试覆盖 gap", "risk": "low", "verify": "识别未覆盖代码"},
+            {"step": "用例设计", "action": "设计边界条件和异常路径测试", "risk": "low", "verify": "用例覆盖充分"},
+            {"step": "生成测试", "action": "generate_tests 生成测试代码", "risk": "low", "verify": "测试代码可运行"},
+            {"step": "运行验证", "action": "run_tests 执行并修复失败用例", "risk": "low", "verify": "全部测试通过"},
+        ],
+        "devops": [
+            {"step": "环境分析", "action": "detect_project 获取项目配置信息", "risk": "low", "verify": "了解当前 CI/CD 状态"},
+            {"step": "配置编写", "action": "编写 CI/CD 配置文件", "risk": "medium", "verify": "配置语法正确"},
+            {"step": "本地验证", "action": "本地模拟测试 pipeline", "risk": "low", "verify": "本地测试通过"},
+        ],
+        "general": [
+            {"step": "理解需求", "action": "明确任务目标和约束", "risk": "low", "verify": "需求理解准确"},
+            {"step": "收集上下文", "action": "search_code + read_file 收集相关代码", "risk": "low", "verify": "上下文充分"},
+            {"step": "制定方案", "action": "选择最优实现路径", "risk": "medium", "verify": "方案可行"},
+            {"step": "执行实施", "action": "按计划修改代码", "risk": "medium", "verify": "功能实现正确"},
+            {"step": "验证结果", "action": "测试和检查验证", "risk": "low", "verify": "任务完成"},
+        ],
+    }
+
+    steps = templates.get(task_type, templates["general"])[:max_steps]
+
+    # 添加依赖关系
+    for i, step in enumerate(steps):
+        step["id"] = i + 1
+        step["depends_on"] = [i] if i > 0 else []
+
+    # 检测项目上下文
+    project_info = {}
+    p = Path(project_path).resolve()
+    if p.exists():
+        has_tests = any(p.rglob("test_*.py")) or any(p.rglob("*_test.py")) or (p / "tests").exists()
+        has_git = (p / ".git").exists()
+        project_info = {"has_tests": has_tests, "has_git": has_git}
+
+    return {
+        "task_type": task_type,
+        "task_description": task_description,
+        "steps": steps,
+        "total_steps": len(steps),
+        "project_context": project_info,
+        "hint": f"检测到任务类型: {task_type}，已生成 {len(steps)} 步执行计划",
+    }

@@ -389,3 +389,103 @@ def git_reset(count: int = 1, hard: bool = False, path: str = ".") -> dict:
         "before": before.get("output", "").strip(),
         "now_at": after.get("output", "").strip(),
     }
+
+
+# ────────────────── PR 摘要工具 ──────────────────
+
+
+@tool(
+    name="pr_summary",
+    description="基于 git diff 自动生成 Pull Request 描述：变更摘要、"
+                "修改文件列表、影响范围和测试建议。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "base_branch": {
+                "type": "string",
+                "description": "基础分支（默认 main）",
+            },
+            "path": {
+                "type": "string",
+                "description": "仓库路径（可选）",
+            },
+        },
+        "required": [],
+    },
+)
+def pr_summary(base_branch: str = "main", path: str = ".") -> dict:
+    """生成 PR 摘要描述。"""
+    import re as _re
+
+    # 获取当前分支名
+    branch_result = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+    current_branch = branch_result.get("output", "").strip()
+
+    # 获取 diff stat
+    stat_result = _run_git(["diff", "--stat", f"{base_branch}...HEAD"], cwd=path)
+    stat_output = stat_result.get("output", "")
+
+    # 获取 diff 内容（限制大小）
+    diff_result = _run_git(["diff", "--no-color", f"{base_branch}...HEAD"], cwd=path)
+    diff_output = diff_result.get("output", "")
+
+    # 获取提交列表
+    log_result = _run_git(
+        ["log", "--oneline", f"{base_branch}..HEAD"], cwd=path
+    )
+    commits = [
+        line.strip()
+        for line in log_result.get("output", "").strip().split("\n")
+        if line.strip()
+    ]
+
+    # 解析变更文件
+    files_changed = []
+    additions = 0
+    deletions = 0
+    for line in stat_output.strip().split("\n"):
+        m = _re.match(r'\s*(.+?)\s*\|\s*(\d+)', line)
+        if m:
+            files_changed.append(m.group(1).strip())
+        # 最后一行是统计总计
+        m_total = _re.match(r'\s*(\d+)\s+files?\s+changed(?:,\s*(\d+)\s+insertion)?(?:.*?(\d+)\s+deletion)?', line)
+        if m_total:
+            additions = int(m_total.group(2) or 0)
+            deletions = int(m_total.group(3) or 0)
+
+    # 分类文件
+    file_categories = {}
+    for f in files_changed:
+        if "test" in f.lower():
+            file_categories.setdefault("tests", []).append(f)
+        elif f.endswith((".md", ".txt", ".rst")):
+            file_categories.setdefault("docs", []).append(f)
+        elif f.endswith((".yml", ".yaml", ".json", ".toml", ".cfg")):
+            file_categories.setdefault("config", []).append(f)
+        else:
+            file_categories.setdefault("source", []).append(f)
+
+    # 生成描述
+    change_scope = "minor" if additions + deletions < 50 else "moderate" if additions + deletions < 200 else "major"
+
+    suggestions = []
+    if not file_categories.get("tests"):
+        suggestions.append("建议：添加或更新测试覆盖本次变更")
+    if change_scope == "major":
+        suggestions.append("注意：变更幅度较大，建议分阶段 review")
+
+    return {
+        "status": "ok",
+        "current_branch": current_branch,
+        "base_branch": base_branch,
+        "commits": commits[:20],
+        "commit_count": len(commits),
+        "files_changed": files_changed,
+        "file_count": len(files_changed),
+        "additions": additions,
+        "deletions": deletions,
+        "change_scope": change_scope,
+        "file_categories": file_categories,
+        "suggestions": suggestions,
+        "diff_preview": diff_output[:3000] if diff_output else "",
+    }

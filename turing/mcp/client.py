@@ -263,7 +263,7 @@ class MCPClient:
             },
             "clientInfo": {
                 "name": "turing-agent",
-                "version": "2.1.0",
+                "version": "3.5.0",
             },
         }, req_id=req_id)
         self._transport.send(init_msg)
@@ -365,6 +365,44 @@ class MCPClient:
             "initialized": self._initialized,
             "tool_count": len(self._tools),
         }
+
+    def ping(self, timeout: float = 5.0) -> bool:
+        """检测 MCP 服务器连接是否存活（v3.1）"""
+        if not self._initialized:
+            return False
+        try:
+            req_id = _next_id()
+            self._transport.send(_jsonrpc_request("ping", {}, req_id=req_id))
+            resp = self._wait_response(req_id, timeout=timeout)
+            return resp is not None
+        except Exception:
+            return False
+
+    def reconnect(self) -> bool:
+        """尝试重新连接 MCP 服务器（v3.1）
+
+        仅支持 SSE 传输（无状态可重连）。stdio 需要重建。
+        返回 True 表示重连成功。
+        """
+        try:
+            self._initialized = False
+            # SSE 传输可直接重新握手
+            if isinstance(self._transport, SSETransport):
+                self._handshake()
+                return self._initialized
+            # stdio 传输：检查进程是否存活
+            if isinstance(self._transport, StdioTransport):
+                proc = self._transport._process
+                if proc.poll() is not None:
+                    # 进程已退出，无法重连
+                    return False
+                # 进程存活，尝试重新握手
+                self._handshake()
+                return self._initialized
+            return False
+        except Exception as e:
+            logger.warning("MCP 重连失败 (%s): %s", self.server_name, e)
+            return False
 
     def close(self) -> None:
         """关闭连接"""

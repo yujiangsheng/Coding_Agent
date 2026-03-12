@@ -1,11 +1,11 @@
-# Turing 编程智能体配置
+# Turing 编程智能体配置（v3.0）
 model:
   name: "qwen3-coder:30b"
   temperature: 0.3
   # 反思/规划阶段的温度
   reflect_temperature: 0.6
   # 最大迭代轮次
-  max_iterations: 20
+  max_iterations: 50
   # 模型上下文窗口大小（token，用于 Token-aware 上下文管理）
   context_length: 32768
   # 是否启用流式输出
@@ -72,12 +72,29 @@ output:
   generated_code_dir: "generated_code"
 
 security:
+  # 危险操作确认模式: interactive（交互确认）/ callback（回调函数）/ auto（自动批准）
+  confirmation_mode: "interactive"
+  # 是否自动批准所有确认请求（仅限测试环境）
+  auto_approve: false
+  # 沙箱执行模式: host（直接执行）/ docker（Docker 容器隔离）
+  sandbox_mode: "host"
+  # Docker 沙箱镜像
+  docker_image: "python:3.11-slim"
   # 禁止执行的命令模式
   blocked_commands:
     - "rm -rf /"
     - "rm -rf ~"
     - "mkfs"
     - "dd if="
+    - ":(){:|:&};:"
+    - "DROP TABLE"
+    - "DROP DATABASE"
+  # 禁止访问的路径
+  blocked_paths:
+    - "/etc/shadow"
+    - "/etc/passwd"
+  # 允许操作的工作目录（为空则使用当前目录）
+  workspace_root: ""
 
 # MCP 协议集成（v2.1）
 # 通过 Model Context Protocol 连接外部工具服务器，扩展 Turing 的工具能力。
@@ -103,12 +120,3 @@ security:
 #       env:
 #         NODE_ENV: production
 #       enabled: false
-    - ":(){:|:&};:"
-    - "DROP TABLE"
-    - "DROP DATABASE"
-  # 禁止访问的路径
-  blocked_paths:
-    - "/etc/shadow"
-    - "/etc/passwd"
-  # 允许操作的工作目录（为空则使用当前目录）
-  workspace_root: ""

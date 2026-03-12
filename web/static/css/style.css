@@ -234,6 +234,7 @@ a:hover { text-decoration: underline; }
   font-size: 16px;
 }
 .titlebar-action:hover { background: rgba(255,255,255,0.08); }
+.titlebar-action-quit:hover { background: var(--color-error); color: var(--text-white); }
 
 /* ==========================================================================
    Command Palette (VS Code signature)

@@ -507,3 +507,178 @@ def _find_references(symbol: str, max_files: int) -> dict:
         "files": results,
         "count": len(results),
     }
+
+
+# ────────────────── 上下文预算工具 ──────────────────
+
+
+@tool(
+    name="context_budget",
+    description="分析当前对话上下文使用情况：估算已用 token 数、剩余预算，"
+                "并给出压缩建议（折叠旧工具结果、摘要替换等）。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "conversation_messages": {
+                "type": "integer",
+                "description": "当前对话消息数",
+            },
+            "model_context_limit": {
+                "type": "integer",
+                "description": "模型上下文窗口大小（token 数，默认 32768）",
+            },
+            "file_contents_chars": {
+                "type": "integer",
+                "description": "已读取的文件内容总字符数",
+            },
+        },
+        "required": [],
+    },
+)
+def context_budget(
+    conversation_messages: int = 0,
+    model_context_limit: int = 32768,
+    file_contents_chars: int = 0,
+) -> dict:
+    """估算上下文使用情况并给出优化建议。"""
+    # 粗略估算：1 token ≈ 3.5 中文字符 或 4 英文字符
+    est_tokens_from_files = file_contents_chars // 3
+    est_tokens_per_msg = 200  # 平均每条消息
+    est_tokens_messages = conversation_messages * est_tokens_per_msg
+    est_system_prompt = 2000  # 系统提示词
+    est_total = est_tokens_from_files + est_tokens_messages + est_system_prompt
+    remaining = model_context_limit - est_total
+    usage_pct = round(est_total / model_context_limit * 100, 1) if model_context_limit > 0 else 0
+
+    suggestions = []
+    if usage_pct > 80:
+        suggestions.append("上下文即将耗尽，建议：摘要折叠旧的工具调用结果")
+        suggestions.append("使用 smart_context 代替 read_file 全文读取")
+    if usage_pct > 60:
+        suggestions.append("优先使用 search_code 定位关键代码，避免全文读取")
+    if conversation_messages > 20:
+        suggestions.append("对话轮次较多，考虑开始新会话或总结当前进展")
+    if est_tokens_from_files > model_context_limit * 0.5:
+        suggestions.append("文件内容占用过多上下文，考虑只读取关键片段")
+
+    return {
+        "model_context_limit": model_context_limit,
+        "estimated_used_tokens": est_total,
+        "remaining_tokens": max(0, remaining),
+        "usage_percent": usage_pct,
+        "breakdown": {
+            "system_prompt": est_system_prompt,
+            "messages": est_tokens_messages,
+            "file_contents": est_tokens_from_files,
+        },
+        "suggestions": suggestions,
+        "status": "critical" if usage_pct > 80 else "warning" if usage_pct > 60 else "ok",
+    }
+
+
+# ────────────────── 上下文压缩工具 ──────────────────
+
+
+@tool(
+    name="context_compress",
+    description="智能压缩工具调用结果或文本内容。根据内容类型采用不同压缩策略："
+                "代码输出保留错误和关键行、搜索结果保留最相关匹配、"
+                "文件内容保留结构和接口。可大幅节省上下文 token。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "要压缩的文本内容",
+            },
+            "content_type": {
+                "type": "string",
+                "description": "内容类型: code_output / search_result / file_content / general",
+                "enum": ["code_output", "search_result", "file_content", "general"],
+            },
+            "max_tokens": {
+                "type": "integer",
+                "description": "压缩后的最大 token 数（默认 500）",
+            },
+        },
+        "required": ["content"],
+    },
+)
+def context_compress(
+    content: str, content_type: str = "general", max_tokens: int = 500,
+) -> dict:
+    """智能压缩文本内容以节省上下文 token。"""
+    import re as _re
+
+    original_chars = len(content)
+    # 粗略估算: 1 token ≈ 3.5 字符
+    max_chars = int(max_tokens * 3.5)
+
+    if original_chars <= max_chars:
+        return {
+            "compressed": content,
+            "original_chars": original_chars,
+            "compressed_chars": original_chars,
+            "ratio": 1.0,
+            "note": "内容无需压缩",
+        }
+
+    compressed = ""
+
+    if content_type == "code_output":
+        # 保留错误行 + 关键状态 + 最后输出
+        lines = content.split("\n")
+        key_lines = []
+        for line in lines:
+            ll = line.lower()
+            if any(kw in ll for kw in [
+                "error", "fail", "traceback", "exception", "warning",
+                "passed", "success", "ok", "assert", "错误", "失败", "成功",
+            ]):
+                key_lines.append(line)
+        # 保留关键行 + 尾部
+        tail = "\n".join(lines[-10:])
+        if key_lines:
+            compressed = "[关键信息]\n" + "\n".join(key_lines[:20]) + "\n\n[尾部]\n" + tail
+        else:
+            compressed = "[开头]\n" + "\n".join(lines[:5]) + "\n\n[尾部]\n" + tail
+
+    elif content_type == "search_result":
+        # 保留前 N 条匹配
+        lines = content.split("\n")
+        match_lines = [l for l in lines if l.strip() and ":" in l]
+        compressed = "\n".join(match_lines[:15])
+        if len(match_lines) > 15:
+            compressed += f"\n...(共 {len(match_lines)} 条匹配，已展示前 15 条)"
+
+    elif content_type == "file_content":
+        # 保留导入 + 类/函数签名 + 摘要
+        lines = content.split("\n")
+        important = []
+        for line in lines:
+            stripped = line.strip()
+            if any(stripped.startswith(kw) for kw in [
+                "import ", "from ", "class ", "def ", "async def ",
+                "export ", "function ", "const ", "interface ",
+            ]):
+                important.append(line)
+            elif stripped.startswith("#") or stripped.startswith("//"):
+                important.append(line)
+        compressed = f"[文件结构摘要 ({len(lines)} 行)]\n" + "\n".join(important[:30])
+
+    else:  # general
+        # 保留开头 + 结尾
+        half = max_chars // 2
+        compressed = content[:half] + "\n...（已压缩）...\n" + content[-half:]
+
+    # 截断到 max_chars
+    if len(compressed) > max_chars:
+        compressed = compressed[:max_chars] + "\n...(已截断)"
+
+    return {
+        "compressed": compressed,
+        "original_chars": original_chars,
+        "compressed_chars": len(compressed),
+        "ratio": round(len(compressed) / original_chars, 3),
+        "savings_percent": round((1 - len(compressed) / original_chars) * 100, 1),
+    }

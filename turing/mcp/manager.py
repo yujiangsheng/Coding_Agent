@@ -240,3 +240,37 @@ class MCPManager:
     def is_mcp_tool(self, tool_name: str) -> bool:
         """判断工具是否来自 MCP"""
         return tool_name in self._registered_tools
+
+    def health_check(self, auto_reconnect: bool = True) -> dict:
+        """检测所有 MCP 服务器连接健康状态，可选自动重连（v3.1）
+
+        Returns:
+            {"server_name": {"alive": bool, "reconnected": bool}, ...}
+        """
+        report = {}
+        for name, client in list(self._clients.items()):
+            alive = client.ping()
+            entry = {"alive": alive, "reconnected": False}
+            if not alive and auto_reconnect:
+                logger.info("MCP 服务器 [%s] 不可达，尝试重连...", name)
+                ok = client.reconnect()
+                if ok:
+                    entry["alive"] = True
+                    entry["reconnected"] = True
+                    logger.info("MCP 服务器 [%s] 重连成功", name)
+                else:
+                    # 尝试完全重建连接
+                    cfg = self._servers.get(name)
+                    if cfg:
+                        self._unregister_tools(name)
+                        try:
+                            new_client = self._connect_server(name, cfg)
+                            self._clients[name] = new_client
+                            self._discover_and_register(name, new_client, cfg)
+                            entry["alive"] = True
+                            entry["reconnected"] = True
+                            logger.info("MCP 服务器 [%s] 重建连接成功", name)
+                        except Exception as e:
+                            logger.warning("MCP 服务器 [%s] 重建失败: %s", name, e)
+            report[name] = entry
+        return report
