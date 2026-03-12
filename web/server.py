@@ -27,9 +27,13 @@ License: MIT
 
 from __future__ import annotations
 
+import functools
 import json
+import logging
 import os
+import secrets
 import sys
+import time as _time
 from pathlib import Path
 
 from flask import (
@@ -48,11 +52,79 @@ sys.path.insert(0, str(ROOT))
 from turing.agent import TuringAgent  # noqa: E402
 from turing.config import Config  # noqa: E402
 
+logger = logging.getLogger(__name__)
+
 app = Flask(
     __name__,
     static_folder="static",
     template_folder="templates",
 )
+app.config["SECRET_KEY"] = os.environ.get("TURING_SECRET", secrets.token_hex(32))
+
+# --- CORS 白名单 ---
+_ALLOWED_ORIGINS = {"http://127.0.0.1:5000", "http://localhost:5000"}
+
+@app.after_request
+def _add_cors(response):
+    origin = request.headers.get("Origin", "")
+    if origin in _ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+# --- 认证中间件 ---
+_API_TOKEN = os.environ.get("TURING_API_TOKEN", "")
+
+def require_auth(f):
+    """Bearer token 认证装饰器（仅在设置了 TURING_API_TOKEN 时生效）"""
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):
+        if not _API_TOKEN:
+            return f(*args, **kwargs)  # 未配置 token 时不启用认证
+        token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        if not secrets.compare_digest(token, _API_TOKEN):
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+# --- 速率限制 ---
+import threading as _threading
+_rate_lock = _threading.Lock()
+_rate_tracker: dict = {}  # {ip: [timestamps]}
+_RATE_LIMIT = 30  # 每分钟最大请求数
+_RATE_WINDOW = 60  # 秒
+
+def _check_rate_limit() -> bool:
+    ip = request.remote_addr or "unknown"
+    now = _time.time()
+    with _rate_lock:
+        # v7.0: 定期清理过期 IP，防止无界增长
+        if len(_rate_tracker) > 1000:
+            stale = [k for k, v in _rate_tracker.items()
+                     if not v or now - v[-1] > _RATE_WINDOW]
+            for k in stale:
+                del _rate_tracker[k]
+        if ip not in _rate_tracker:
+            _rate_tracker[ip] = []
+        _rate_tracker[ip] = [t for t in _rate_tracker[ip] if now - t < _RATE_WINDOW]
+        if len(_rate_tracker[ip]) >= _RATE_LIMIT:
+            return False
+        _rate_tracker[ip].append(now)
+        return True
+
+# --- 工作区路径约束 ---
+_WORKSPACE_ROOT = ROOT
+
+def _validate_path(path_str: str) -> Path | None:
+    """验证路径在工作区范围内，返回 resolved Path 或 None"""
+    try:
+        target = Path(path_str).resolve()
+        # 必须在工作区根目录之下
+        target.relative_to(_WORKSPACE_ROOT)
+        return target
+    except (ValueError, OSError):
+        return None
 
 # ---------------------------------------------------------------------------
 # 全局 Agent 实例
@@ -89,12 +161,17 @@ def index():
 
 
 @app.route("/api/chat", methods=["POST"])
+@require_auth
 def chat():
     """流式聊天接口 (Server-Sent Events)"""
+    if not _check_rate_limit():
+        return jsonify({"error": "请求过于频繁，请稍后再试"}), 429
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "消息不能为空"}), 400
+    if len(message) > 50000:
+        return jsonify({"error": "消息过长（上限 50000 字符）"}), 400
 
     agent = get_agent()
 
@@ -157,6 +234,7 @@ def evolution_log():
 
 
 @app.route("/api/new-session", methods=["POST"])
+@require_auth
 def new_session():
     """开始新会话"""
     agent = get_agent()
@@ -166,6 +244,7 @@ def new_session():
 
 
 @app.route("/api/index-project", methods=["POST"])
+@require_auth
 def index_project():
     """索引项目到 RAG 知识库"""
     data = request.get_json(silent=True) or {}
@@ -178,20 +257,16 @@ def index_project():
 
 
 @app.route("/api/files/list")
+@require_auth
 def files_list():
     """列出指定目录下的文件和子目录"""
     dir_path = request.args.get("path", "").strip()
     if not dir_path:
         dir_path = str(ROOT)
 
-    target = Path(dir_path).resolve()
-
-    # 安全检查：不允许访问敏感目录
-    cfg = Config.load()
-    blocked = cfg.get("security.blocked_paths", [])
-    for bp in blocked:
-        if str(target).startswith(str(Path(bp).resolve())):
-            return jsonify({"error": "安全限制：无权访问该路径"}), 403
+    target = _validate_path(dir_path)
+    if target is None:
+        return jsonify({"error": "安全限制：路径超出工作区范围"}), 403
 
     if not target.is_dir():
         return jsonify({"error": "路径不存在或不是目录"}), 404
@@ -220,20 +295,16 @@ def files_list():
 
 
 @app.route("/api/files/read")
+@require_auth
 def files_read():
     """读取文件内容"""
     file_path = request.args.get("path", "").strip()
     if not file_path:
         return jsonify({"error": "缺少文件路径"}), 400
 
-    target = Path(file_path).resolve()
-
-    # 安全检查
-    cfg = Config.load()
-    blocked = cfg.get("security.blocked_paths", [])
-    for bp in blocked:
-        if str(target).startswith(str(Path(bp).resolve())):
-            return jsonify({"error": "安全限制：无权访问该文件"}), 403
+    target = _validate_path(file_path)
+    if target is None:
+        return jsonify({"error": "安全限制：路径超出工作区范围"}), 403
 
     if not target.is_file():
         return jsonify({"error": "文件不存在"}), 404
@@ -279,15 +350,18 @@ def files_read():
 
 
 @app.route("/api/shutdown", methods=["POST"])
+@require_auth
 def shutdown():
-    """关闭服务器"""
+    """关闭服务器（需要认证）"""
+    logger.info("收到关闭请求，来源: %s", request.remote_addr)
     func = request.environ.get("werkzeug.server.shutdown")
     if func is not None:
         func()
     else:
-        # Flask 2.x+ 不再暴露 shutdown 函数，直接退出进程
         import threading
-        threading.Timer(0.5, lambda: os._exit(0)).start()
+        import signal
+        # 使用 SIGTERM 安全关闭，允许清理
+        threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
     return jsonify({"status": "ok", "message": "服务器正在关闭"})
 
 
@@ -306,4 +380,6 @@ if __name__ == "__main__":
     print(f"\n  🤖 Turing Web UI")
     print(f"  → http://{args.host}:{args.port}\n")
 
-    app.run(host=args.host, port=args.port, debug=True, threaded=True)
+    app.run(host=args.host, port=args.port,
+            debug=os.environ.get("TURING_DEBUG", "").lower() in ("1", "true"),
+            threaded=True)

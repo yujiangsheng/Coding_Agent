@@ -209,10 +209,71 @@ class RAGEngine:
                         }
 
         # 按相似度排序，去除内部距离字段
-        sorted_items = sorted(all_items.values(), key=lambda x: x["_dist"])[:top_k]
-        items = [{k: v for k, v in it.items() if k != "_dist"} for it in sorted_items]
+        sorted_items = sorted(all_items.values(), key=lambda x: x["_dist"])[:top_k * 2]
+        vector_results = [{k: v for k, v in it.items() if k != "_dist"} for it in sorted_items]
 
-        return {"results": items, "count": len(items)}
+        # ── 混合检索：关键词搜索 + RRF 融合 ──
+        keyword_results = self._keyword_search(query, collection, top_k * 2)
+        if keyword_results:
+            merged = self._rrf_merge(vector_results, keyword_results, top_k)
+        else:
+            merged = vector_results[:top_k]
+
+        return {"results": merged, "count": len(merged)}
+
+    def _keyword_search(self, query: str, collection, top_k: int) -> list[dict]:
+        """关键词匹配搜索（补充向量检索的精确匹配能力）"""
+        try:
+            all_docs = collection.get(
+                include=["documents", "metadatas"],
+                limit=min(500, collection.count()),
+            )
+        except Exception:
+            return []
+
+        if not all_docs.get("documents"):
+            return []
+
+        query_lower = query.lower()
+        query_terms = [t for t in query_lower.split() if len(t) > 1]
+        if not query_terms:
+            return []
+
+        scored = []
+        for doc, meta in zip(all_docs["documents"], all_docs["metadatas"]):
+            doc_lower = doc.lower()
+            # TF 打分：统计查询词在文档中出现的次数
+            score = 0
+            for term in query_terms:
+                count = doc_lower.count(term)
+                if count > 0:
+                    score += 1 + min(count, 5) * 0.2  # 命中 1 分 + 频次加成
+            # 精确短语匹配加成
+            if query_lower in doc_lower:
+                score += 3
+            if score > 0:
+                scored.append((score, {
+                    "content": doc,
+                    "source_file": meta.get("source_file", ""),
+                    "chunk_index": meta.get("chunk_index", 0),
+                }))
+        scored.sort(key=lambda x: -x[0])
+        return [item for _, item in scored[:top_k]]
+
+    def _rrf_merge(self, vector: list, keyword: list, top_k: int, k: int = 60) -> list:
+        """Reciprocal Rank Fusion 合并两路检索结果"""
+        scores: dict = {}
+        items: dict = {}
+        for rank, item in enumerate(vector):
+            key = f"{item.get('source_file', '')}:{item.get('chunk_index', 0)}"
+            scores[key] = scores.get(key, 0) + 1.0 / (k + rank)
+            items[key] = item
+        for rank, item in enumerate(keyword):
+            key = f"{item.get('source_file', '')}:{item.get('chunk_index', 0)}"
+            scores[key] = scores.get(key, 0) + 1.0 / (k + rank)
+            items[key] = item
+        ranked = sorted(scores.items(), key=lambda x: -x[1])
+        return [items[key] for key, _ in ranked[:top_k]]
 
     def _expand_query(self, query: str) -> list[str]:
         """查询扩展：生成多个搜索变体以提高召回率"""

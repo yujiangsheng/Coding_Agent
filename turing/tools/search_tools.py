@@ -56,6 +56,15 @@ def search_code(
         if not search_dir.exists():
             return {"error": f"目录不存在: {path}"}
 
+        # v6.0: 路径遍历防护 — 限制在 workspace root 内
+        from turing.config import Config
+        _cfg = Config.load()
+        _ws_root = _cfg.get("security.workspace_root", None)
+        if _ws_root:
+            _ws = Path(_ws_root).resolve()
+            if not str(search_dir).startswith(str(_ws)):
+                return {"error": f"路径超出工作区范围: {path}"}
+
         max_results = min(max_results, 200)
 
         # 优先使用 ripgrep
@@ -136,6 +145,15 @@ def list_directory(
             return {"error": f"目录不存在: {path}"}
         if not p.is_dir():
             return {"error": f"不是目录: {path}"}
+
+        # v6.0: 路径遍历防护
+        from turing.config import Config
+        _cfg = Config.load()
+        _ws_root = _cfg.get("security.workspace_root", None)
+        if _ws_root:
+            _ws = Path(_ws_root).resolve()
+            if not str(p).startswith(str(_ws)):
+                return {"error": f"路径超出工作区范围: {path}"}
 
         skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox"}
 

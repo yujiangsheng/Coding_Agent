@@ -168,8 +168,20 @@ class PersistentMemory:
         project_dir = self._projects_dir / project_name
         project_dir.mkdir(exist_ok=True)
         filepath = project_dir / f"{info_type}.yaml"
-        with open(filepath, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        # v11.0: 原子写入
+        import tempfile, os
+        content = yaml.dump(data, allow_unicode=True, default_flow_style=False)
+        fd, tmp_path = tempfile.mkstemp(dir=str(filepath.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, str(filepath))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def load_project_info(self, project_name: str, info_type: str) -> dict | None:
         """加载项目级知识"""
@@ -188,8 +200,20 @@ class PersistentMemory:
         """保存/更新策略模板"""
         filepath = self._strategies_dir / f"{task_type}.yaml"
         strategy["updated_at"] = time.time()
-        with open(filepath, "w", encoding="utf-8") as f:
-            yaml.dump(strategy, f, allow_unicode=True, default_flow_style=False)
+        # v11.0: 原子写入
+        import tempfile, os
+        content = yaml.dump(strategy, allow_unicode=True, default_flow_style=False)
+        fd, tmp_path = tempfile.mkstemp(dir=str(filepath.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, str(filepath))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def load_strategy(self, task_type: str) -> dict | None:
         """加载策略模板"""
@@ -220,12 +244,56 @@ class PersistentMemory:
 
     # --- 内部 ---
 
+    _SCHEMA_VERSION = 2  # 当前索引 schema 版本
+
     def _load_index(self) -> list[dict]:
-        if self._index_path.exists():
+        if not self._index_path.exists():
+            return []
+        try:
             with open(self._index_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            # 索引损坏：备份后重建
+            backup = self._index_path.with_suffix(".json.bak")
+            try:
+                import shutil
+                shutil.copy2(self._index_path, backup)
+            except Exception:
+                pass
+            return []
+
+        # schema 版本迁移
+        if isinstance(data, dict) and "schema_version" in data:
+            return self._migrate_index(data)
+        elif isinstance(data, list):
+            # v1（无版本号）→ v2：补充缺失字段
+            migrated = []
+            for entry in data:
+                if not isinstance(entry, dict) or "content" not in entry:
+                    continue  # 跳过损坏条目
+                entry.setdefault("id", uuid.uuid4().hex[:12])
+                entry.setdefault("tags", [])
+                entry.setdefault("metadata", {})
+                entry.setdefault("created_at", 0)
+                entry.setdefault("updated_at", entry.get("created_at", 0))
+                migrated.append(entry)
+            return migrated
         return []
 
+    def _migrate_index(self, data: dict) -> list[dict]:
+        """运行 schema 版本迁移"""
+        version = data.get("schema_version", 1)
+        entries = data.get("entries", [])
+        # 未来版本迁移逻辑放在这里
+        return entries
+
     def _save_index(self):
-        with open(self._index_path, "w", encoding="utf-8") as f:
-            json.dump(self._index, f, ensure_ascii=False, indent=2)
+        data = {
+            "schema_version": self._SCHEMA_VERSION,
+            "entries": self._index,
+        }
+        # 原子写入：先写临时文件再重命名，防止中途崩溃损坏
+        tmp_path = self._index_path.with_suffix(".json.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp_path.replace(self._index_path)

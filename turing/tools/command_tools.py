@@ -20,17 +20,21 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 
 from turing.tools.registry import tool
 
 
 def _check_command_security(command: str) -> str | None:
-    """检查命令安全性，返回错误信息或 None"""
+    """检查命令安全性，返回错误信息或 None（v7.0: 正规化空白符防绕过）"""
     from turing.config import Config
     cfg = Config.load()
     blocked = cfg.get("security.blocked_commands", [])
+    # 正规化：压缩连续空白、转小写
+    normalized = " ".join(command.split()).lower()
     for pattern in blocked:
-        if pattern in command:
+        norm_pattern = " ".join(pattern.split()).lower()
+        if norm_pattern in normalized:
             return f"安全限制：禁止执行包含 '{pattern}' 的命令"
     return None
 
@@ -91,14 +95,24 @@ class _ShellSession:
                 if new_cwd and os.path.isdir(new_cwd):
                     self._cwd = new_cwd
 
-            # 更新 env（解析 key=value）
+            # 更新 env（解析 key=value，v10.0: 正确处理多行值）
             if len(parts) > 2:
                 env_text = parts[2].strip()
                 new_env = {}
+                current_key = None
+                current_val_lines: list[str] = []
                 for line in env_text.split("\n"):
                     eq = line.find("=")
-                    if eq > 0:
-                        new_env[line[:eq]] = line[eq + 1:]
+                    # 新的 key=value 对: key 必须是合法环境变量名
+                    if eq > 0 and line[:eq].replace("_", "").replace("%", "").isalnum():
+                        if current_key is not None:
+                            new_env[current_key] = "\n".join(current_val_lines)
+                        current_key = line[:eq]
+                        current_val_lines = [line[eq + 1:]]
+                    elif current_key is not None:
+                        current_val_lines.append(line)
+                if current_key is not None:
+                    new_env[current_key] = "\n".join(current_val_lines)
                 if new_env:
                     self._env = new_env
 
@@ -147,6 +161,17 @@ def _collect_bg_output(pid: int, proc: subprocess.Popen):
                         _bg_processes[pid]["output_lines"] = buf[-max_lines:]
     except Exception:
         pass
+    finally:
+        # v10.0: 回收子进程防止僵尸，并标记终止时间
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        with _bg_lock:
+            if pid in _bg_processes:
+                _bg_processes[pid]["terminated"] = True
+                _bg_processes[pid]["exit_code"] = proc.returncode
+                _bg_processes[pid]["end_time"] = time.time()
 
 
 @tool(
@@ -210,13 +235,15 @@ def run_background(command: str, cwd: str = None) -> dict:
     workspace = cwd or cfg.get("security.workspace_root", None) or os.getcwd()
 
     try:
+        import shlex
         proc = subprocess.Popen(
-            command,
-            shell=True,
+            shlex.split(command),
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             cwd=workspace,
+            start_new_session=True,  # 创建新进程组，方便整组终止
         )
         pid = proc.pid
 
@@ -258,6 +285,12 @@ def run_background(command: str, cwd: str = None) -> dict:
 def check_background(pid: int = None) -> dict:
     """查看后台进程状态和最新输出。"""
     with _bg_lock:
+        # v10.0: 清理已终止超过 5 分钟的进程条目
+        stale = [p for p, info in _bg_processes.items()
+                 if info.get("terminated") and time.time() - info.get("end_time", 0) > 300]
+        for p in stale:
+            del _bg_processes[p]
+
         if pid is not None:
             info = _bg_processes.get(pid)
             if not info:
@@ -301,25 +334,50 @@ def check_background(pid: int = None) -> dict:
     },
 )
 def stop_background(pid: int) -> dict:
-    """终止指定后台进程（SIGTERM）。"""
+    """终止指定后台进程（SIGTERM → SIGKILL 渐进式终止）。"""
+    import signal
+
     with _bg_lock:
         info = _bg_processes.get(pid)
         if not info:
             return {"error": f"未找到 PID={pid} 的后台进程"}
         proc = info["process"]
         if proc.poll() is not None:
+            del _bg_processes[pid]
             return {"status": "already_stopped", "exit_code": proc.returncode}
+
+        # 阶段 1: SIGTERM — 优雅终止（等待 5 秒）
         try:
-            proc.terminate()
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except (ProcessLookupError, OSError):
-            pass
+            try:
+                proc.terminate()
+            except (ProcessLookupError, OSError):
+                pass
+
         try:
             proc.wait(timeout=5)
+            del _bg_processes[pid]
+            return {"status": "ok", "pid": pid, "method": "SIGTERM", "message": "后台进程已优雅终止"}
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
+            pass
+
+        # 阶段 2: SIGKILL — 强制终止
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, OSError):
+                pass
+
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            pass
+
         del _bg_processes[pid]
-    return {"status": "ok", "pid": pid, "message": "后台进程已终止"}
+    return {"status": "ok", "pid": pid, "method": "SIGKILL", "message": "后台进程已强制终止"}
 
 
 # ────────────────── 自动修复工具 ──────────────────

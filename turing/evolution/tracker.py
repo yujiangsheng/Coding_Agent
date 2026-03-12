@@ -700,9 +700,23 @@ class EvolutionTracker:
         return []
 
     def _save_reflections(self):
-        """持久化反思记录到磁盘。"""
-        with open(self._reflections_path, "w", encoding="utf-8") as f:
-            json.dump(self._reflections, f, ensure_ascii=False, indent=2)
+        """持久化反思记录到磁盘（v6.0: 原子写入防损坏）。"""
+        import tempfile
+        import os
+        data = json.dumps(self._reflections, ensure_ascii=False, indent=2)
+        dir_path = self._reflections_path.parent
+        dir_path.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp_path, str(self._reflections_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     # ===== Phase 11: 经验合成器 =====
 

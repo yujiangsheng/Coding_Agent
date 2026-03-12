@@ -296,9 +296,9 @@ def git_branch(action: str = "list", name: str = None, path: str = ".") -> dict:
         return {"error": "分支名（name）是必填的"}
 
     if action == "create":
-        result = _run_git(["checkout", "-b", name], cwd=path)
+        result = _run_git(["checkout", "-b", "--", name], cwd=path)
     elif action == "switch":
-        result = _run_git(["checkout", name], cwd=path)
+        result = _run_git(["checkout", "--", name], cwd=path)
     else:
         return {"error": f"不支持的操作: {action}"}
 
@@ -373,6 +373,16 @@ def git_stash(action: str = "list", message: str = None, path: str = ".") -> dic
 )
 def git_reset(count: int = 1, hard: bool = False, path: str = ".") -> dict:
     """回退提交（支持 soft/hard 模式）。"""
+    # v11.0: 验证 count 参数
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return {"error": f"count 必须为正整数，收到: {count!r}"}
+    if count < 1:
+        return {"error": f"count 必须 >= 1，收到: {count}"}
+    if count > 100:
+        return {"error": f"count 过大（最大 100），收到: {count}"}
+
     # 先记录当前 HEAD 用于报告
     before = _run_git(["log", "-1", "--oneline"], cwd=path)
 
@@ -489,3 +499,69 @@ def pr_summary(base_branch: str = "main", path: str = ".") -> dict:
         "suggestions": suggestions,
         "diff_preview": diff_output[:3000] if diff_output else "",
     }
+
+
+@tool(
+    name="git_merge",
+    description="合并指定分支到当前分支。如果发生冲突，返回冲突文件列表和解决提示。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "branch": {
+                "type": "string",
+                "description": "要合并的分支名（例如 'feature/xxx'）",
+            },
+            "path": {
+                "type": "string",
+                "description": "仓库路径（默认当前目录）",
+            },
+            "abort_on_conflict": {
+                "type": "boolean",
+                "description": "遇到冲突时是否自动 abort 恢复原始状态",
+            },
+        },
+        "required": ["branch"],
+    },
+)
+def git_merge(branch: str, path: str = ".", abort_on_conflict: bool = False) -> dict:
+    """合并分支，自动检测冲突并提供解决指引。"""
+    # 检查工作区是否干净
+    status = _run_git(["status", "--porcelain"], cwd=path)
+    if status.get("output", "").strip():
+        return {"error": "工作区有未提交的变更，请先 commit 或 stash"}
+
+    # 检查目标分支是否存在
+    check = _run_git(["rev-parse", "--verify", branch], cwd=path)
+    if check.get("exit_code", 1) != 0:
+        return {"error": f"分支不存在: {branch}"}
+
+    # 执行合并
+    result = _run_git(["merge", "--no-edit", branch], cwd=path, timeout=30)
+    output = result.get("output", "")
+
+    if result.get("exit_code", 1) == 0:
+        return {"status": "ok", "output": output, "message": f"成功合并 {branch}"}
+
+    # 检测冲突
+    if "CONFLICT" in output or "conflict" in output.lower():
+        conflicts_result = _run_git(["diff", "--name-only", "--diff-filter=U"], cwd=path)
+        conflict_files = [f.strip() for f in
+                          conflicts_result.get("output", "").split("\n") if f.strip()]
+
+        if abort_on_conflict:
+            _run_git(["merge", "--abort"], cwd=path)
+            return {
+                "status": "conflict_aborted",
+                "conflicts": conflict_files,
+                "message": f"合并 {branch} 存在 {len(conflict_files)} 个冲突，已自动 abort 恢复",
+            }
+
+        return {
+            "status": "conflict",
+            "conflicts": conflict_files,
+            "conflict_count": len(conflict_files),
+            "hint": "请使用 read_file 查看冲突标记（<<<<<<<），"
+                    "用 edit_file 解决冲突后，git_commit 完成合并",
+        }
+
+    return {"status": "error", "output": output}

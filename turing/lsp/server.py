@@ -37,12 +37,18 @@ from typing import Any
 class TuringLSPServer:
     """Turing LSP 服务器核心
 
-    实现 LSP 的最小子集以提供代码补全能力。
+    实现 LSP 的核心子集：
+    - textDocument/completion — 代码补全
+    - textDocument/hover — 悬停信息
+    - textDocument/definition — 跳转到定义
+    - textDocument/publishDiagnostics — 诊断（lint/语法错误）
+    - textDocument/codeAction — 代码操作（快速修复）
     """
 
     def __init__(self):
         self._documents: dict[str, str] = {}  # uri -> content
         self._symbol_cache: dict[str, list[dict]] = {}  # uri -> symbols
+        self._diagnostics_cache: dict[str, list[dict]] = {}  # uri -> diagnostics
         self._running = True
 
     def run_stdio(self):
@@ -62,7 +68,10 @@ class TuringLSPServer:
 
     def _read_message(self) -> dict | None:
         """从 stdin 读取 LSP 消息"""
+        _MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
+        _MAX_HEADERS = 32
         headers = {}
+        header_count = 0
         while True:
             line = sys.stdin.buffer.readline()
             if not line:
@@ -70,12 +79,19 @@ class TuringLSPServer:
             line = line.decode("utf-8").strip()
             if not line:
                 break
+            header_count += 1
+            if header_count > _MAX_HEADERS:
+                return None
             if ":" in line:
                 key, value = line.split(":", 1)
                 headers[key.strip()] = value.strip()
 
         content_length = int(headers.get("Content-Length", 0))
-        if content_length == 0:
+        if content_length <= 0:
+            return None
+        # v10.0: 拒绝超大消息防 OOM
+        if content_length > _MAX_MESSAGE_SIZE:
+            sys.stdin.buffer.read(content_length)
             return None
 
         body = sys.stdin.buffer.read(content_length)
@@ -114,6 +130,12 @@ class TuringLSPServer:
             return self._handle_initialize(params)
         elif method == "textDocument/completion":
             return self._handle_completion(params)
+        elif method == "textDocument/hover":
+            return self._handle_hover(params)
+        elif method == "textDocument/definition":
+            return self._handle_definition(params)
+        elif method == "textDocument/codeAction":
+            return self._handle_code_action(params)
         elif method == "shutdown":
             self._running = False
             return None
@@ -140,10 +162,13 @@ class TuringLSPServer:
                     "openClose": True,
                     "change": 1,  # Full sync
                 },
+                "hoverProvider": True,
+                "definitionProvider": True,
+                "codeActionProvider": True,
             },
             "serverInfo": {
                 "name": "turing-lsp",
-                "version": "0.1.0",
+                "version": "0.2.0",
             },
         }
 
@@ -154,6 +179,7 @@ class TuringLSPServer:
         text = doc.get("text", "")
         self._documents[uri] = text
         self._update_symbols(uri, text)
+        self._publish_diagnostics(uri, text)
 
     def _handle_did_change(self, params: dict):
         """文档变更通知"""
@@ -164,6 +190,7 @@ class TuringLSPServer:
             text = changes[-1].get("text", "")
             self._documents[uri] = text
             self._update_symbols(uri, text)
+            self._publish_diagnostics(uri, text)
 
     def _handle_completion(self, params: dict) -> dict:
         """处理代码补全请求"""
@@ -376,6 +403,264 @@ class TuringLSPServer:
             "import": 9,     # Module
         }
         return kind_map.get(sym_type, 1)  # Text
+
+    # ── Hover ──────────────────────────────
+
+    def _handle_hover(self, params: dict) -> dict | None:
+        """处理 textDocument/hover — 悬停显示符号信息"""
+        uri = params.get("textDocument", {}).get("uri", "")
+        position = params.get("position", {})
+        line = position.get("line", 0)
+        character = position.get("character", 0)
+
+        text = self._documents.get(uri, "")
+        if not text:
+            return None
+
+        # 获取光标处的单词
+        lines = text.split("\n")
+        if line >= len(lines):
+            return None
+        current_line = lines[line]
+        word = self._get_word_at(current_line, character)
+        if not word:
+            return None
+
+        # 在符号缓存中查找
+        symbols = self._symbol_cache.get(uri, [])
+        for sym in symbols:
+            if sym.get("name") == word:
+                hover_text = self._format_hover(sym, text)
+                if hover_text:
+                    return {
+                        "contents": {
+                            "kind": "markdown",
+                            "value": hover_text,
+                        },
+                    }
+        return None
+
+    def _format_hover(self, sym: dict, full_text: str) -> str:
+        """格式化悬停信息为 Markdown"""
+        sym_type = sym.get("type", "")
+        name = sym.get("name", "")
+        detail = sym.get("detail", "")
+        doc = sym.get("doc", "")
+
+        parts = []
+        if detail:
+            parts.append(f"```python\n{detail}\n```")
+        elif sym_type == "class":
+            parts.append(f"```python\nclass {name}\n```")
+        elif sym_type in ("function", "method"):
+            parts.append(f"```python\ndef {name}(...)\n```")
+
+        # 尝试从 AST 提取 docstring
+        if not doc and sym.get("line"):
+            doc = self._extract_docstring(full_text, sym["line"])
+        if doc:
+            parts.append(f"---\n{doc}")
+
+        parent = sym.get("parent")
+        if parent:
+            parts.append(f"*Defined in class `{parent}`*")
+
+        return "\n\n".join(parts) if parts else ""
+
+    def _extract_docstring(self, text: str, lineno: int) -> str:
+        """从源码中提取指定行定义的 docstring"""
+        try:
+            tree = ast.parse(text)
+            for node in ast.walk(tree):
+                if hasattr(node, "lineno") and node.lineno == lineno:
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        if (node.body and isinstance(node.body[0], ast.Expr)
+                                and isinstance(node.body[0].value, (ast.Str, ast.Constant))):
+                            val = node.body[0].value
+                            return val.s if isinstance(val, ast.Str) else str(val.value)
+        except (SyntaxError, ValueError):
+            pass
+        return ""
+
+    @staticmethod
+    def _get_word_at(line: str, col: int) -> str:
+        """提取指定列位置的单词"""
+        if col > len(line):
+            col = len(line)
+        # 向左扩展
+        start = col
+        while start > 0 and (line[start - 1].isalnum() or line[start - 1] == "_"):
+            start -= 1
+        # 向右扩展
+        end = col
+        while end < len(line) and (line[end].isalnum() or line[end] == "_"):
+            end += 1
+        return line[start:end] if start < end else ""
+
+    # ── Go-to-Definition ──────────────────────────────
+
+    def _handle_definition(self, params: dict) -> list[dict] | None:
+        """处理 textDocument/definition — 跳转到定义"""
+        uri = params.get("textDocument", {}).get("uri", "")
+        position = params.get("position", {})
+        line = position.get("line", 0)
+        character = position.get("character", 0)
+
+        text = self._documents.get(uri, "")
+        if not text:
+            return None
+
+        lines = text.split("\n")
+        if line >= len(lines):
+            return None
+        word = self._get_word_at(lines[line], character)
+        if not word:
+            return None
+
+        # 在当前文件的符号中搜索
+        symbols = self._symbol_cache.get(uri, [])
+        for sym in symbols:
+            if sym.get("name") == word and sym.get("line"):
+                return [{
+                    "uri": uri,
+                    "range": {
+                        "start": {"line": sym["line"] - 1, "character": 0},
+                        "end": {"line": sym["line"] - 1, "character": len(word)},
+                    },
+                }]
+
+        # 搜索其他已打开文档
+        for other_uri, other_symbols in self._symbol_cache.items():
+            if other_uri == uri:
+                continue
+            for sym in other_symbols:
+                if sym.get("name") == word and sym.get("line"):
+                    return [{
+                        "uri": other_uri,
+                        "range": {
+                            "start": {"line": sym["line"] - 1, "character": 0},
+                            "end": {"line": sym["line"] - 1, "character": len(word)},
+                        },
+                    }]
+
+        return None
+
+    # ── Diagnostics ──────────────────────────────
+
+    def _publish_diagnostics(self, uri: str, text: str):
+        """发布诊断信息（语法错误 + 基础 lint）"""
+        diagnostics = []
+
+        # 1. Python 语法错误
+        try:
+            ast.parse(text)
+        except SyntaxError as e:
+            diagnostics.append({
+                "range": {
+                    "start": {"line": (e.lineno or 1) - 1, "character": (e.offset or 1) - 1},
+                    "end": {"line": (e.lineno or 1) - 1, "character": (e.offset or 1)},
+                },
+                "severity": 1,  # Error
+                "source": "turing-lsp",
+                "message": f"SyntaxError: {e.msg}",
+            })
+
+        # 2. 基础 lint 检查
+        lines = text.split("\n")
+        for i, line_text in enumerate(lines):
+            # 未使用的 import（简易检测：import 行中的名称在后续未出现）
+            # 这里只做简单的行级检查
+            stripped = line_text.rstrip()
+
+            # 检查行过长（PEP 8: 120 字符警告）
+            if len(stripped) > 120:
+                diagnostics.append({
+                    "range": {
+                        "start": {"line": i, "character": 120},
+                        "end": {"line": i, "character": len(stripped)},
+                    },
+                    "severity": 3,  # Information
+                    "source": "turing-lsp",
+                    "message": f"Line too long ({len(stripped)} > 120 characters)",
+                    "code": "E501",
+                })
+
+            # 检查行尾空白
+            if stripped != line_text and line_text.endswith(" "):
+                diagnostics.append({
+                    "range": {
+                        "start": {"line": i, "character": len(stripped)},
+                        "end": {"line": i, "character": len(line_text)},
+                    },
+                    "severity": 4,  # Hint
+                    "source": "turing-lsp",
+                    "message": "Trailing whitespace",
+                    "code": "W291",
+                })
+
+        self._diagnostics_cache[uri] = diagnostics
+
+        # 发送 publishDiagnostics 通知
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": diagnostics,
+            },
+        }
+        self._write_message(notification)
+
+    # ── Code Actions ──────────────────────────────
+
+    def _handle_code_action(self, params: dict) -> list[dict]:
+        """处理 textDocument/codeAction — 提供快速修复"""
+        uri = params.get("textDocument", {}).get("uri", "")
+        context = params.get("context", {})
+        diagnostics = context.get("diagnostics", [])
+
+        actions = []
+        for diag in diagnostics:
+            code = diag.get("code", "")
+
+            if code == "W291":
+                # 行尾空白修复
+                line = diag["range"]["start"]["line"]
+                text = self._documents.get(uri, "")
+                lines = text.split("\n")
+                if line < len(lines):
+                    stripped = lines[line].rstrip()
+                    actions.append({
+                        "title": "Remove trailing whitespace",
+                        "kind": "quickfix",
+                        "diagnostics": [diag],
+                        "edit": {
+                            "changes": {
+                                uri: [{
+                                    "range": {
+                                        "start": {"line": line, "character": 0},
+                                        "end": {"line": line, "character": len(lines[line])},
+                                    },
+                                    "newText": stripped,
+                                }],
+                            },
+                        },
+                    })
+
+        # 通用：Organize Imports（使用 isort 或内置排序）
+        text = self._documents.get(uri, "")
+        if text and "import " in text:
+            actions.append({
+                "title": "Organize imports (sort)",
+                "kind": "source.organizeImports",
+                "command": {
+                    "title": "Organize Imports",
+                    "command": "turing.organizeImports",
+                    "arguments": [uri],
+                },
+            })
+
+        return actions
 
 
 def main():

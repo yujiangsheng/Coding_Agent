@@ -48,7 +48,7 @@ class CodeEvaluator:
             code_path.write_text(code, encoding="utf-8")
 
             # 测试文件需要导入 solution
-            test_code = f"import sys; sys.path.insert(0, '{tmpdir}')\n"
+            test_code = "import sys; sys.path.insert(0, {})\n".format(repr(str(tmpdir)))
             test_code += "from solution import *\n\n"
             test_code += tests
             test_path.write_text(test_code, encoding="utf-8")
@@ -118,12 +118,12 @@ class CodeEvaluator:
 
                 if check_code:
                     # 自定义检查代码
-                    runner = f"import sys; sys.path.insert(0, '{tmpdir}')\n"
+                    runner = "import sys; sys.path.insert(0, {})\n".format(repr(str(tmpdir)))
                     runner += "from solution import *\n"
                     runner += check_code
                 else:
                     # 自动生成函数调用测试
-                    runner = f"import sys; sys.path.insert(0, '{tmpdir}')\n"
+                    runner = "import sys; sys.path.insert(0, {})\n".format(repr(str(tmpdir)))
                     runner += "from solution import *\n"
                     runner += f"result = {entry_point}({test_input})\n"
                     runner += f"assert result == {repr(expected)}, f'Expected {repr(expected)}, got {{result}}'\n"

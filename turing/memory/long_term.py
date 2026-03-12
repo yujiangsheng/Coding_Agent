@@ -84,23 +84,33 @@ class LongTermMemory:
                 n_results=min(top_k, max(self._collection.count(), 1)),
             )
             items = []
+            batch_ids = []
+            batch_metas = []
             if results["documents"] and results["documents"][0]:
                 for doc, meta, doc_id in zip(
                     results["documents"][0],
                     results["metadatas"][0],
                     results["ids"][0],
                 ):
-                    # 更新访问计数
-                    self._collection.update(
-                        ids=[doc_id],
-                        metadatas=[{**meta, "access_count": meta.get("access_count", 0) + 1}],
-                    )
+                    # 批量收集访问计数更新
+                    updated_meta = {**meta, "access_count": meta.get("access_count", 0) + 1}
+                    batch_ids.append(doc_id)
+                    batch_metas.append(updated_meta)
                     items.append({
                         "id": doc_id,
                         "content": doc,
                         "tags": json.loads(meta.get("tags", "[]")),
                         "layer": "long_term",
                     })
+                # 单次批量更新（替代 N 次单条更新）
+                if batch_ids:
+                    try:
+                        self._collection.update(
+                            ids=batch_ids,
+                            metadatas=batch_metas,
+                        )
+                    except Exception:
+                        pass  # 访问计数更新非关键路径
             return items
         else:
             # 降级：关键词匹配
@@ -136,8 +146,23 @@ class LongTermMemory:
         return []
 
     def _save_json_store(self):
-        with open(self._json_path, "w", encoding="utf-8") as f:
-            json.dump(self._store, f, ensure_ascii=False, indent=2)
+        # v10.0: 原子写入，防止崩溃损坏文件
+        import os
+        import tempfile
+        data = json.dumps(self._store, ensure_ascii=False, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self._json_path.parent), suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp_path, str(self._json_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:

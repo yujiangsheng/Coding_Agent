@@ -3,8 +3,8 @@
 基于本地大模型（Qwen3-Coder 30B）的编程 Agent，对标 Aider / Cursor / Claude Code / Devin，具备：
 
 - **四层记忆系统** — L1 工作记忆 / L2 长期记忆 / L3 持久记忆 / L4 外部记忆（RAG）
-- **80+ 内置工具** — 文件管理、持久化 Shell、Git 完整工作流、代码搜索、
-  测试运行、多语言 AST 分析、基准评测、MCP 协议集成等
+- **82 内置工具** — 文件管理、持久化 Shell、Git 完整工作流、代码搜索、
+  测试运行、多语言 AST 分析、基准评测、MCP 协议集成、URL 内容获取等
 - **安全防护系统** — 危险操作确认 + Docker 沙箱隔离 + 审计日志（对标 Claude Code 权限系统）
 - **多语言 AST 分析** — Python（内置 ast）+ JS/TS/Go/Rust/Java/C/C++/Ruby（tree-sitter）
 - **精确 Token 管理** — tiktoken 精确计算 + 消息优先级打分 + 渐进式多层压缩
@@ -14,6 +14,13 @@
 - **自我演化** — 任务反思 → 经验积累 → 策略进化 → 知识蒸馏 → AI 工具对比学习
   → 失败恢复引擎 → 自训练模拟器 → 15 维评分系统
 - **元认知系统** — 6 维认知雷达、偏差检测、置信校准、认知自适应
+- **v3.6 新能力**:
+  · VS Code 原生扩展 — 侧边栏聊天 + 代码解释 + MCP 协议连接
+  · URL 内容获取 — fetch_url 工具（robots.txt 检查 + HTML→纯文本转换）
+  · 智能依赖追踪 — AST import 链自动分析，注入依赖模块结构摘要
+  · Prompt Caching — Anthropic cache_control 标记减少重复传输成本
+  · 多模态输入 — encode_image() 支持图片 base64，3 家 Provider 支持 Vision
+  · 内联 Diff 增强 — 编辑结果更清晰的彩色差异展示
 - **v6.0 新能力**:
   · 安全防护系统 — SafetyGuard 危险操作确认 + SandboxExecutor Docker 沙箱（对标 Claude Code / Devin）
   · 多语言 AST — tree-sitter 支持 JS/TS/Go/Rust/Java/C/C++/Ruby 代码结构分析
@@ -68,7 +75,7 @@
     TuringAgent (ReAct Loop + CoT + ETF + Safety + Sub-Agent)
         ├── SafetyGuard (Permission: ALLOW/CONFIRM/DENY + Audit)
         ├── SandboxExecutor (Docker isolation / host fallback)
-        ├── ToolRegistry (80 tools, 19 modules)
+        ├── ToolRegistry (82 tools, 19 modules)
         │     ├── 文件管理（diff 预览 + multi_edit + move/copy/delete/find）
         │     ├── 持久化 Shell（env/cwd 保持 + 后台进程 run/check/stop）
         │     ├── 搜索 + Repo Map / Git 完整工作流
@@ -90,5 +97,5 @@ Author: Jiangsheng Yu
 License: MIT
 """
 
-__version__ = "3.5.0"
+__version__ = "3.6.0"
 __author__ = "Jiangsheng Yu"

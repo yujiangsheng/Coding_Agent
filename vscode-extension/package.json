@@ -1,0 +1,88 @@
+{
+  "name": "turing-agent",
+  "displayName": "Turing Agent",
+  "description": "VS Code 集成 Turing 编程智能体 — 通过 MCP 协议连接 Turing 的全部工具能力",
+  "version": "0.1.0",
+  "publisher": "turing-agent",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:turingChat"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "turing",
+          "title": "Turing Agent",
+          "icon": "resources/turing-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "turing": [
+        {
+          "type": "webview",
+          "id": "turingChat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "turing.startChat",
+        "title": "Turing: Start Chat"
+      },
+      {
+        "command": "turing.applyDiff",
+        "title": "Turing: Apply Suggested Edit"
+      },
+      {
+        "command": "turing.explainSelection",
+        "title": "Turing: Explain Selected Code"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "turing.explainSelection",
+          "when": "editorHasSelection",
+          "group": "turing"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Turing Agent",
+      "properties": {
+        "turing.mcpCommand": {
+          "type": "string",
+          "default": "python -m turing.mcp.server",
+          "description": "启动 Turing MCP 服务器的命令"
+        },
+        "turing.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python 解释器路径"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0",
+    "eslint": "^8.50.0"
+  }
+}

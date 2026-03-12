@@ -13,7 +13,7 @@ class TestVersion:
 
     def test_version(self):
         import turing
-        assert turing.__version__ == "3.5.0"
+        assert turing.__version__ == "3.6.0"
 
     def test_prompt_capabilities_count(self):
         from turing.prompt import SYSTEM_PROMPT

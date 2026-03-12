@@ -316,6 +316,10 @@ class SandboxExecutor:
         self._container_id: str | None = None
         self._docker_available: bool | None = None
 
+        # v8.0: 注册退出清理钩子，防止 Docker 容器泄漏
+        import atexit
+        atexit.register(self.cleanup)
+
     @property
     def mode(self) -> str:
         return self._mode
@@ -396,25 +400,51 @@ class SandboxExecutor:
                 "output": output.strip(),
                 "success": result.returncode == 0,
                 "sandbox": "docker",
+                "container": self._container_id,
             }
         except subprocess.TimeoutExpired:
             return {"error": f"命令超时（>{timeout}s）", "sandbox": "docker"}
         except Exception as e:
             return {"error": f"Docker 执行失败: {e}"}
 
+    def _validate_mount_path(self, path: str) -> bool:
+        """验证挂载路径安全性，防止目录逃逸"""
+        from pathlib import Path as _Path
+        resolved = _Path(path).resolve()
+        # 禁止挂载系统关键目录
+        forbidden = {"/", "/etc", "/usr", "/bin", "/sbin", "/boot",
+                     "/dev", "/proc", "/sys", "/var", "/root"}
+        if str(resolved) in forbidden:
+            logger.error("拒绝挂载系统关键目录: %s", path)
+            return False
+        # 禁止包含 .. 的路径
+        if ".." in str(path):
+            logger.error("拒绝包含 '..' 的挂载路径: %s", path)
+            return False
+        return True
+
     def _start_container(self):
-        """启动 Docker 容器"""
+        """启动 Docker 容器（v3.1 — 增强安全隔离）"""
         import subprocess
 
         cmd = [
             "docker", "run", "-d", "--rm",
             "--name", f"turing-sandbox-{int(time.time())}",
-            "--network", "none",  # 网络隔离
-            "--memory", "512m",   # 内存限制
-            "--cpus", "1",        # CPU 限制
+            "--network", "none",       # 网络隔离
+            "--memory", "512m",        # 内存限制
+            "--cpus", "1",             # CPU 限制
+            "--pids-limit", "256",     # 进程数限制（防 fork 炸弹）
+            "--user", "nobody",        # 非 root 用户执行
+            "--cap-drop=ALL",          # 丢弃所有 Linux capabilities
+            "--security-opt", "no-new-privileges",  # 禁止提权
+            "--ipc", "private",        # IPC 隔离
         ]
+
         if self._workspace:
-            cmd.extend(["-v", f"{self._workspace}:/workspace", "-w", "/workspace"])
+            if not self._validate_mount_path(self._workspace):
+                logger.error("挂载路径验证失败，拒绝启动容器")
+                return
+            cmd.extend(["-v", f"{self._workspace}:/workspace:rw", "-w", "/workspace"])
         cmd.extend([self._image, "sleep", "3600"])
 
         try:
@@ -426,6 +456,25 @@ class SandboxExecutor:
                 logger.warning(f"Docker 启动失败: {result.stderr}")
         except Exception as e:
             logger.warning(f"Docker 启动异常: {e}")
+
+    def container_stats(self) -> dict | None:
+        """获取容器资源使用统计"""
+        if not self._container_id:
+            return None
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["docker", "stats", "--no-stream", "--format",
+                 '{"cpu":"{{.CPUPerc}}","mem":"{{.MemUsage}}","pids":"{{.PIDs}}"}',
+                 self._container_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                import json
+                return json.loads(result.stdout.strip())
+        except Exception:
+            pass
+        return None
 
     def cleanup(self):
         """清理容器"""

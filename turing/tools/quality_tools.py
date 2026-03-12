@@ -16,15 +16,15 @@ from pathlib import Path
 from turing.tools.registry import tool
 
 
-def _run_quality_cmd(cmd: str, cwd: str = ".", timeout: int = 60) -> dict:
-    """执行代码质量工具命令"""
+def _run_quality_cmd(cmd: list[str], cwd: str = ".", timeout: int = 60) -> dict:
+    """执行代码质量工具命令（v6.0: shell=False 防注入）"""
     from turing.config import Config
     cfg = Config.load()
     workspace = cfg.get("security.workspace_root", None) or cwd
 
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
+            cmd, shell=False, capture_output=True, text=True,
             timeout=timeout, cwd=workspace,
         )
         output = result.stdout
@@ -95,14 +95,12 @@ def lint_code(path: str = ".", fix: bool = False) -> dict:
     if not base_cmd:
         return {"error": "未检测到可用的 linter 工具。请安装 ruff、flake8 或 eslint。"}
 
-    cmd = base_cmd
-    if fix and linter_name == "ruff":
-        cmd += " --fix"
-    elif fix and linter_name == "eslint":
-        cmd += " --fix"
+    cmd = base_cmd.split()
+    if fix and linter_name in ("ruff", "eslint"):
+        cmd.append("--fix")
 
     target = path if path != "." else "."
-    cmd += f" {target}"
+    cmd.append(target)
 
     result = _run_quality_cmd(cmd)
     result["linter"] = linter_name
@@ -149,23 +147,26 @@ def format_code(path: str = ".", check_only: bool = False) -> dict:
     # Python
     if shutil.which("ruff") and (p.suffix == ".py" or p.is_dir()):
         formatter = "ruff-format"
-        cmd = f"ruff format {'--check' if check_only else ''} {path}"
+        cmd = ["ruff", "format"]
+        if check_only:
+            cmd.append("--check")
+        cmd.append(path)
     elif shutil.which("black") and (p.suffix == ".py" or p.is_dir()):
         formatter = "black"
-        cmd = f"black {'--check' if check_only else ''} {path}"
+        cmd = ["black"]
+        if check_only:
+            cmd.append("--check")
+        cmd.append(path)
 
     # JS/TS
     elif shutil.which("npx") and p.suffix in (".js", ".ts", ".jsx", ".tsx", ".json", ".css"):
         formatter = "prettier"
-        cmd = f"npx prettier {'--check' if check_only else '--write'} {path}"
+        cmd = ["npx", "prettier", "--check" if check_only else "--write", path]
 
     # Go
     elif shutil.which("gofmt") and p.suffix == ".go":
         formatter = "gofmt"
-        if check_only:
-            cmd = f"gofmt -d {path}"
-        else:
-            cmd = f"gofmt -w {path}"
+        cmd = ["gofmt", "-d" if check_only else "-w", path]
 
     if not cmd:
         return {
@@ -208,19 +209,26 @@ def type_check(path: str = ".", strict: bool = False) -> dict:
     if p.suffix == ".py" or (p.is_dir() and any(p.glob("**/*.py"))):
         if shutil.which("mypy"):
             checker = "mypy"
-            cmd = f"mypy {'--strict' if strict else ''} {path}"
+            cmd = ["mypy"]
+            if strict:
+                cmd.append("--strict")
+            cmd.append(path)
         elif shutil.which("pyright"):
             checker = "pyright"
-            cmd = f"pyright {path}"
+            cmd = ["pyright", path]
         else:
-            # Try running via python module
             checker = "mypy"
-            cmd = f"python3 -m mypy {'--strict' if strict else ''} {path}"
+            cmd = ["python3", "-m", "mypy"]
+            if strict:
+                cmd.append("--strict")
+            cmd.append(path)
 
     # TypeScript
     elif p.suffix in (".ts", ".tsx") or (p.is_dir() and (p / "tsconfig.json").exists()):
         checker = "tsc"
-        cmd = f"npx tsc --noEmit {'--strict' if strict else ''}"
+        cmd = ["npx", "tsc", "--noEmit"]
+        if strict:
+            cmd.append("--strict")
 
     if not cmd:
         return {
@@ -278,7 +286,8 @@ def security_scan(path: str, severity: str = "medium") -> dict:
     if shutil.which("bandit"):
         sev_map = {"low": "l", "medium": "m", "high": "h"}
         sev_flag = sev_map.get(severity, "m")
-        cmd = f"bandit -r -ll -{sev_flag} -f json {path}"
+        # v10.0: 修正为 list 格式，匹配 _run_quality_cmd 的 shell=False
+        cmd = ["bandit", "-r", "-ll", f"-{sev_flag}", "-f", "json", str(p)]
         result = _run_quality_cmd(cmd, timeout=60)
         if result.get("exit_code", 1) in (0, 1):
             try:

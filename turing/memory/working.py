@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -24,11 +27,15 @@ class WorkingMemory:
     - 内存中维护，可落盘到 session 文件
     """
 
-    def __init__(self, data_dir: str = "turing_data"):
+    MAX_ITEMS = 200  # 工作记忆容量上限
+
+    def __init__(self, data_dir: str = "turing_data", max_items: int = None):
         self.session_id = uuid.uuid4().hex[:8]
         self._items: list[dict] = []
+        self._max_items = max_items or self.MAX_ITEMS
         self._dir = Path(data_dir) / "working_memory"
         self._dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()  # v7.0: 线程安全
 
     def add(self, content: Any, tags: list[str] | None = None) -> dict:
         """写入一条工作记忆"""
@@ -38,9 +45,18 @@ class WorkingMemory:
             "tags": tags or [],
             "timestamp": time.time(),
         }
-        self._items.append(entry)
-        self._save()
-        return {"status": "ok", "id": entry["id"], "layer": "working"}
+        with self._lock:
+            self._items.append(entry)
+            # 容量保护：超限时淘汰最老条目
+            evicted = 0
+            if len(self._items) > self._max_items:
+                evicted = len(self._items) - self._max_items
+                self._items = self._items[-self._max_items:]
+            self._save()
+        result = {"status": "ok", "id": entry["id"], "layer": "working"}
+        if evicted:
+            result["evicted"] = evicted
+        return result
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         """TF-IDF 风格的关键词检索（兼顾词频和区分度，支持中文）"""
@@ -120,21 +136,32 @@ class WorkingMemory:
     def remove(self, items: list[dict]):
         """移除指定条目"""
         ids_to_remove = {item["id"] for item in items}
-        self._items = [i for i in self._items if i["id"] not in ids_to_remove]
-        self._save()
+        with self._lock:
+            self._items = [i for i in self._items if i["id"] not in ids_to_remove]
+            self._save()
 
     def clear(self):
         """清空会话"""
-        self._items.clear()
-        session_file = self._dir / f"session_{self.session_id}.json"
-        if session_file.exists():
-            session_file.unlink()
+        with self._lock:
+            self._items.clear()
+            session_file = self._dir / f"session_{self.session_id}.json"
+            if session_file.exists():
+                session_file.unlink()
 
     def _save(self):
-        """落盘"""
+        """原子落盘（v7.0: tmpfile + os.replace 防损坏）"""
         session_file = self._dir / f"session_{self.session_id}.json"
-        with open(session_file, "w", encoding="utf-8") as f:
-            json.dump(self._items, f, ensure_ascii=False, indent=2)
+        fd, tmp = tempfile.mkstemp(dir=str(self._dir), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._items, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, str(session_file))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
     def item_count(self) -> int:
         return len(self._items)

@@ -34,7 +34,7 @@ class TestToolRegistration:
     def test_total_tool_count(self):
         from turing.tools.registry import get_all_tools
         tools = get_all_tools()
-        assert len(tools) == 80, f"Expected 80 tools, got {len(tools)}"
+        assert len(tools) == 82, f"Expected 82 tools, got {len(tools)}"
 
     def test_new_tools_registered(self):
         from turing.tools.registry import get_all_tools

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
@@ -19,6 +20,12 @@ from typing import Any
 from turing.memory.working import WorkingMemory
 from turing.memory.long_term import LongTermMemory
 from turing.memory.persistent import PersistentMemory
+
+
+def _content_hash(content: str) -> str:
+    """生成内容的标准化哈希，用于跨层去重"""
+    normalized = content.strip().lower()
+    return hashlib.md5(normalized.encode("utf-8")).hexdigest()
 
 
 class MemoryManager:
@@ -55,23 +62,42 @@ class MemoryManager:
         for layer_name in layers:
             store = layer_map.get(layer_name)
             if store:
-                # 每层多取一些，后面统一排名
-                items = store.search(query, top_k=top_k * 2)
+                # v9.0: 错误隔离，单层失败不影响其他层
+                try:
+                    # 每层多取一些，后面统一排名
+                    items = store.search(query, top_k=top_k * 2)
+                except Exception as _layer_err:
+                    import logging as _mem_log
+                    _mem_log.getLogger(__name__).warning(
+                        "记忆层 %s 检索失败，跳过: %s", layer_name, _layer_err
+                    )
+                    continue
                 for i, item in enumerate(items):
                     item["layer"] = layer_name
                     # 基于层权重和检索排名打分
                     item["_rank_score"] = layer_weights.get(layer_name, 1.0) * (1.0 / (1 + i))
                 results.extend(items)
 
-        # 去重（按 id）
-        seen = set()
+        # 去重（按 id + 内容哈希双重去重）
+        seen_ids = set()
+        seen_hashes = set()
         deduped = []
         for r in results:
             rid = r.get("id", "")
-            if rid and rid in seen:
+            content = r.get("content", "")
+            chash = _content_hash(content) if content else ""
+
+            # ID 去重
+            if rid and rid in seen_ids:
                 continue
+            # 内容哈希去重（跨层不同 ID 但内容相同）
+            if chash and chash in seen_hashes:
+                continue
+
             if rid:
-                seen.add(rid)
+                seen_ids.add(rid)
+            if chash:
+                seen_hashes.add(chash)
             deduped.append(r)
 
         # 按综合排名分数排序

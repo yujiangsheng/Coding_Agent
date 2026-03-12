@@ -4,8 +4,8 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "turing-agent"
-version = "3.5.0"
-description = "Turing — 自进化编程智能体 (Self-Evolving Coding Agent) | 80 工具 · MCP 协议 · 多 Provider LLM · 竞争力分析 · LSP 补全 · 4 层记忆 · 15 维评分 · 元认知"
+version = "3.6.0"
+description = "Turing — 自进化编程智能体 (Self-Evolving Coding Agent) | 82 工具 · MCP 协议 · 多 Provider LLM · 竞争力分析 · LSP 补全 · VS Code 扩展 · 4 层记忆 · 15 维评分 · 元认知"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"

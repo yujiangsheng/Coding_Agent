@@ -1,6 +1,6 @@
 # 使用示例
 
-> Turing v3.5.0 — 80 工具 · 19 模块 · 15 维评分 · 竞争力分析 · LSP 服务
+> Turing v3.6.0 — 82 工具 · 19 模块 · 15 维评分 · 竞争力分析 · LSP 服务 · VS Code 扩展
 
 ## 目录
 
@@ -32,6 +32,10 @@
 26. [任务规划与 PR 摘要 (v3.4)](#26-任务规划与-pr-摘要-v34)
 27. [安全扫描 (v3.4)](#27-安全扫描-v34)
 28. [Checkpoint 工作流 (v3.3)](#28-checkpoint-工作流-v33)
+29. [URL 内容获取 (v3.6)](#29-url-内容获取-v36)
+30. [智能依赖上下文 (v3.6)](#30-智能依赖上下文-v36)
+31. [VS Code 扩展 (v3.6)](#31-vs-code-扩展-v36)
+32. [MCP 服务器模式 (v3.6)](#32-mcp-服务器模式-v36)
 
 ---
 
@@ -900,4 +904,142 @@ You > 恢复到之前的检查点
 
 ---
 
-*文档版本: v3.5.0 · 最后更新: 2025-07*
+## 29. URL 内容获取 (v3.6)
+
+```
+You > 帮我获取 FastAPI 官方文档的教程页面内容
+
+🔧 调用工具: fetch_url {"url": "https://fastapi.tiangolo.com/tutorial/"}
+   ✓ {"content": "FastAPI Tutorial\n\n...", "content_type": "text/html",
+      "length": 12345, "title": "Tutorial - FastAPI"}
+
+┌─ Turing ─────────────────────────────────────┐
+│ 已获取 FastAPI 教程页面，主要内容：           │
+│ • First Steps — 创建最简 FastAPI 应用        │
+│ • Path Parameters — 路径参数和类型验证       │
+│ • Query Parameters — 查询参数处理            │
+│ • Request Body — Pydantic 模型请求体         │
+│                                              │
+│ fetch_url 会自动检查 robots.txt，并将 HTML    │
+│ 转换为纯文本方便 LLM 处理。                  │
+└──────────────────────────────────────────────┘
+```
+
+**工具特性：**
+- 自动检查 `robots.txt` 规则，尊重网站爬取策略
+- HTML 页面自动转换为纯文本（去除标签、脚本、样式）
+- 设置合理的 User-Agent 头和 10 秒超时
+- 响应内容自动截断，防止 token 上下文爆炸
+
+---
+
+## 30. 智能依赖上下文 (v3.6)
+
+```
+You > 帮我修改 turing/agent.py 中的 chat 方法
+
+🔍 Phase 0.32: 智能依赖追踪
+   ├── AST 分析 agent.py 的 import 语句
+   │   ├── from turing.config import Config
+   │   ├── from turing.llm.router import ModelRouter
+   │   ├── from turing.memory.manager import MemoryManager
+   │   └── from turing.tools.registry import ...
+   │
+   ├── 自动提取模块结构摘要 (类/函数/签名)
+   │   ├── Config: get(), set(), _deep_merge() ...
+   │   ├── ModelRouter: chat(), stream_chat(), _select_provider() ...
+   │   └── MemoryManager: retrieve(), store(), compress() ...
+   │
+   └── 注入 LLM 上下文 → "依赖模块概览: ..."
+
+┌─ Turing ─────────────────────────────────────┐
+│ 已分析 agent.py 的依赖链，LLM 将获得完整的  │
+│ 上下文，了解每个 import 模块提供的类和方法   │
+│ 签名，从而更精准地修改代码。                 │
+└──────────────────────────────────────────────┘
+```
+
+**工作原理：**
+1. `_auto_collect_dependencies()` 用 AST 解析目标文件的 import 语句
+2. 对每个依赖模块调用 `_extract_structure_summary()` 提取类/函数签名
+3. 将结构摘要注入系统消息，让 LLM 理解完整的模块接口
+
+---
+
+## 31. VS Code 扩展 (v3.6)
+
+```bash
+# 安装 VS Code 扩展
+cd vscode-extension
+npm install && npm run compile
+
+# 在 VS Code 中按 F5 启动扩展调试宿主
+```
+
+```
+┌─ VS Code ────────────────────────────────────┐
+│ 侧边栏 → Turing Chat Panel                  │
+│                                              │
+│ You > 解释这段代码的作用                      │
+│ [右键选中代码 → Turing: Explain Selection]    │
+│                                              │
+│ 🔧 MCP: tools/call → code_structure          │
+│ 🔧 MCP: tools/call → read_file               │
+│                                              │
+│ Turing > 这段代码实现了一个 LRU 缓存：       │
+│ • OrderedDict 维护访问顺序                   │
+│ • get() 时 move_to_end() 更新位置            │
+│ • put() 时超容量删除最旧条目                 │
+└──────────────────────────────────────────────┘
+```
+
+**功能：**
+- **侧边栏聊天**：在 VS Code 侧边栏直接与 Turing 对话
+- **代码解释**：选中代码 → 右键 → Turing: Explain Selection
+- **MCP 通信**：通过 JSON-RPC 2.0 调用 Turing 的 82 个工具
+
+---
+
+## 32. MCP 服务器模式 (v3.6)
+
+```bash
+# 启动 Turing MCP 服务器
+python -m turing.mcp.server
+
+# 其他 MCP 客户端（Claude Desktop、VS Code 扩展等）可连接
+```
+
+```json
+// Claude Desktop 配置 (~/.config/claude/claude_desktop_config.json)
+{
+  "mcpServers": {
+    "turing": {
+      "command": "python",
+      "args": ["-m", "turing.mcp.server"],
+      "cwd": "/path/to/Coding_Agent"
+    }
+  }
+}
+```
+
+```
+# MCP 协议交互示例
+→ {"jsonrpc": "2.0", "method": "initialize", "id": 1, "params": {...}}
+← {"jsonrpc": "2.0", "result": {"capabilities": {"tools": {}}}, "id": 1}
+
+→ {"jsonrpc": "2.0", "method": "tools/list", "id": 2}
+← {"jsonrpc": "2.0", "result": {"tools": [{"name": "read_file", ...}, ...]}, "id": 2}
+
+→ {"jsonrpc": "2.0", "method": "tools/call", "id": 3,
+   "params": {"name": "search_code", "arguments": {"pattern": "def chat"}}}
+← {"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": "..."}]}, "id": 3}
+```
+
+**暴露的资源 (resources)：**
+- `turing://strategies` — 当前策略模板
+- `turing://evolution` — 进化记录与评分
+- `turing://gap_analysis` — 竞争力差距分析
+
+---
+
+*文档版本: v3.6.0 · 最后更新: 2025-07*

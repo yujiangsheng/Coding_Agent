@@ -788,37 +788,69 @@ class MetacognitiveEngine:
     def _load_records(self) -> list[dict]:
         """从磁盘加载元认知历史记录。"""
         if self._meta_path.exists():
-            with open(self._meta_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(self._meta_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
         return []
 
     def _save_records(self):
         """持久化元认知记录到磁盘（保留最近 200 条）。"""
         # 只保留最近 200 条
         self._meta_records = self._meta_records[-200:]
-        with open(self._meta_path, "w", encoding="utf-8") as f:
-            json.dump(self._meta_records, f, ensure_ascii=False, indent=2)
+        # v11.0: 原子写入
+        import tempfile, os
+        data = json.dumps(self._meta_records, ensure_ascii=False, indent=2)
+        fd, tmp_path = tempfile.mkstemp(dir=str(self._meta_path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp_path, str(self._meta_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _load_calibration(self):
         """从磁盘加载置信校准历史。"""
         cal_path = Path(self._data_dir) / "evolution" / "calibration.json"
         if cal_path.exists():
-            with open(cal_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                self._calibration_history = [
-                    (item["confidence"], item["success"])
-                    for item in data
-                ]
+            try:
+                with open(cal_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self._calibration_history = [
+                        (item["confidence"], item["success"])
+                        for item in data
+                    ]
+            except (json.JSONDecodeError, OSError, KeyError):
+                self._calibration_history = []
 
     def _save_calibration(self):
         """持久化置信校准数据到磁盘（保留最近 500 条）。"""
         cal_path = Path(self._data_dir) / "evolution" / "calibration.json"
-        data = [
+        data_list = [
             {"confidence": c, "success": s}
             for c, s in self._calibration_history[-500:]
         ]
-        with open(cal_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        # v11.0: 原子写入
+        import tempfile, os
+        data = json.dumps(data_list, ensure_ascii=False, indent=2)
+        fd, tmp_path = tempfile.mkstemp(dir=str(cal_path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp_path, str(cal_path))
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     # ===== Phase 12: 认知适应层 (Cognitive Adaptation Layer) =====
 

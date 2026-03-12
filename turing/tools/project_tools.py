@@ -59,11 +59,23 @@ def detect_project(path: str = ".") -> dict:
         ".kt": "Kotlin", ".cs": "C#", ".cpp": "C++", ".c": "C",
     }
     lang_counts = {}
+    _MAX_SCAN = 10_000
+    _skip_dirs = {".git", "node_modules", "__pycache__", ".venv", "venv",
+                  "dist", "build", ".tox", ".mypy_cache", "vendor"}
+    scanned = 0
     for f in p.rglob("*"):
-        if f.is_file() and not any(part.startswith(".") for part in f.parts):
-            lang = ext_map.get(f.suffix.lower())
-            if lang:
-                lang_counts[lang] = lang_counts.get(lang, 0) + 1
+        if scanned >= _MAX_SCAN:
+            break
+        if f.is_dir():
+            continue
+        if any(part in _skip_dirs for part in f.relative_to(p).parts):
+            continue
+        if any(part.startswith(".") for part in f.parts):
+            continue
+        scanned += 1
+        lang = ext_map.get(f.suffix.lower())
+        if lang:
+            lang_counts[lang] = lang_counts.get(lang, 0) + 1
 
     result["languages"] = sorted(lang_counts.keys(), key=lambda l: lang_counts[l], reverse=True)
     result["language_stats"] = {k: v for k, v in sorted(lang_counts.items(), key=lambda x: -x[1])}

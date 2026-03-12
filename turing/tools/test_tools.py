@@ -18,6 +18,15 @@ from pathlib import Path
 
 from turing.tools.registry import tool
 
+# v6.0: 全局 LLM Router 引用（由 Agent 注入，避免 _generate_smart_tests 绕过路由）
+_llm_router = None
+
+
+def set_llm_router(router):
+    """由 TuringAgent 注入 LLM Router 实例"""
+    global _llm_router
+    _llm_router = router
+
 
 def _detect_test_framework(path: str = ".") -> dict:
     """检测项目使用的测试框架"""
@@ -163,8 +172,9 @@ def run_tests(
     workspace = cfg.get("security.workspace_root", None) or path
 
     try:
+        import shlex
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
+            shlex.split(cmd), shell=False, capture_output=True, text=True,
             timeout=120, cwd=workspace,
         )
         output = result.stdout
@@ -382,19 +392,22 @@ def generate_tests(
 
 def _generate_smart_tests(source_path: Path, content: str, suffix: str,
                           target_funcs: list, output_file: str) -> dict:
-    """使用 LLM 智能生成包含边界条件和异常路径的测试（v3.1）"""
+    """使用 LLM 智能生成包含边界条件和异常路径的测试（v3.1, v6.0: 使用 router）"""
     try:
-        from turing.llm.provider import create_provider
         from turing.config import Config
         cfg = Config.load()
 
-        # 从配置创建 provider
-        llm_cfg = cfg.get("llm", {})
-        default_name = llm_cfg.get("default", "ollama")
-        provider_cfg = llm_cfg.get("providers", {}).get(default_name, {})
-        provider_type = provider_cfg.pop("type", default_name)
-        provider = create_provider(provider_type, **provider_cfg)
-        provider_cfg["type"] = provider_type  # 恢复
+        # v6.0: 优先使用全局 router，避免绕过路由和破坏性 pop
+        if _llm_router is not None:
+            router = _llm_router
+        else:
+            from turing.llm.provider import create_provider
+            llm_cfg = cfg.get("llm", {})
+            default_name = llm_cfg.get("default", "ollama")
+            provider_cfg = dict(llm_cfg.get("providers", {}).get(default_name, {}))
+            provider_type = provider_cfg.pop("type", default_name)
+            router = None
+            provider = create_provider(provider_type, **provider_cfg)
 
         # 限制源代码长度
         src_snippet = content[:6000]
@@ -424,13 +437,14 @@ Requirements:
 
 Output the test code directly, wrapped in a single code block."""
 
-        resp = provider.chat(
-            messages=[
-                {"role": "system", "content": f"You are a senior QA engineer. Generate production-quality {lang} tests."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-        )
+        _chat_messages = [
+            {"role": "system", "content": f"You are a senior QA engineer. Generate production-quality {lang} tests."},
+            {"role": "user", "content": prompt},
+        ]
+        if router is not None:
+            resp = router.chat(messages=_chat_messages, temperature=0.3)
+        else:
+            resp = provider.chat(messages=_chat_messages, temperature=0.3)
         generated = resp.get("content", "")
 
         # 提取代码块

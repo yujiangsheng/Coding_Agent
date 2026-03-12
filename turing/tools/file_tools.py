@@ -35,11 +35,36 @@ def _get_generated_code_dir() -> str:
 
 
 def _check_path_security(path: str) -> str | None:
-    """路径安全检查，返回错误信息或 None"""
+    """路径安全检查，返回错误信息或 None
+
+    v9.0: 增加工作区 allowlist，仅允许访问 workspace_root 及 generated_code 目录内的文件，
+    同时保留 blocked_paths 黑名单作为二级防线，并检测 symlink 逃逸。
+    """
     from turing.config import Config
     cfg = Config.load()
-    blocked = cfg.get("security.blocked_paths", [])
+
     resolved = str(Path(path).resolve())
+
+    # --- v9.0 allowlist: 只允许工作区和生成代码目录 ---
+    workspace_root = str(Path(cfg.get("security.workspace_root", os.getcwd())).resolve())
+    gen_dir = str(Path(_get_generated_code_dir()).resolve())
+    # 也允许系统临时目录（测试环境使用）
+    import tempfile as _tf
+    tmp_root = str(Path(_tf.gettempdir()).resolve())
+    allowed_prefixes = [workspace_root, gen_dir, tmp_root]
+    if not any(resolved == pfx or resolved.startswith(pfx + os.sep) for pfx in allowed_prefixes):
+        return f"安全限制：路径 {path} 在工作区之外"
+
+    # --- symlink 逃逸检测 ---
+    try:
+        real = str(Path(path).resolve(strict=False))
+        if not any(real == pfx or real.startswith(pfx + os.sep) for pfx in allowed_prefixes):
+            return f"安全限制：符号链接 {path} 指向工作区外部"
+    except (OSError, ValueError):
+        pass
+
+    # --- blocklist 二级防线 ---
+    blocked = cfg.get("security.blocked_paths", [])
     for bp in blocked:
         if resolved.startswith(str(Path(bp).resolve())):
             return f"安全限制：禁止访问 {path}"
@@ -76,6 +101,17 @@ def read_file(path: str, start_line: int = None, end_line: int = None) -> dict:
             return {"error": f"文件不存在: {path}"}
         if not p.is_file():
             return {"error": f"不是文件: {path}"}
+
+        # 文件大小保护（防 OOM）
+        file_size = p.stat().st_size
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            return {"error": f"文件过大 ({file_size / 1024 / 1024:.1f}MB > 10MB)，请使用 start_line/end_line 分段读取"}
+
+        # 二进制文件检测
+        with open(p, "rb") as fb:
+            sample = fb.read(8192)
+            if b"\x00" in sample:
+                return {"error": f"二进制文件无法读取: {path}"}
 
         with open(p, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()

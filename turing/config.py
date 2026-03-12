@@ -15,9 +15,26 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 import os
 import yaml
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# 配置 schema：定义合法的顶层和二层 key 以及值类型约束
+_CONFIG_SCHEMA = {
+    "model": {"name": str, "temperature": (int, float), "reflect_temperature": (int, float),
+              "max_iterations": int, "token_budget": int},
+    "memory": {"data_dir": str, "working": dict, "long_term": dict, "persistent": dict},
+    "output": {"generated_code_dir": str},
+    "evolution": {"strategy_threshold": int, "distill_interval": int},
+    "security": {"confirmation_mode": str, "auto_approve": bool, "sandbox_mode": str,
+                 "docker_image": str, "blocked_commands": list, "blocked_paths": list,
+                 "workspace_root": str},
+    "providers": dict,  # 动态 provider 配置
+    "router": dict,     # 路由配置
+}
 
 _DEFAULT_CONFIG = {
     "model": {
@@ -89,6 +106,8 @@ class Config:
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
                 file_data = yaml.safe_load(f) or {}
+            # 验证配置
+            self._validate(file_data)
             data = _deep_merge(data, file_data)
 
         self._data = data
@@ -96,6 +115,33 @@ class Config:
         ws = data["security"]["workspace_root"]
         if not ws:
             self._data["security"]["workspace_root"] = os.getcwd()
+
+    @staticmethod
+    def _validate(file_data: dict):
+        """验证用户配置文件中的 key 和值类型，打印警告"""
+        for top_key, value in file_data.items():
+            if top_key not in _CONFIG_SCHEMA:
+                logger.warning("配置警告: 未知的顶层配置项 '%s'，将被忽略", top_key)
+                continue
+            schema_val = _CONFIG_SCHEMA[top_key]
+            if isinstance(schema_val, dict) and isinstance(value, dict):
+                for sub_key, sub_val in value.items():
+                    if sub_key in schema_val:
+                        expected_type = schema_val[sub_key]
+                        if isinstance(expected_type, tuple):
+                            if not isinstance(sub_val, expected_type):
+                                logger.warning(
+                                    "配置警告: '%s.%s' 应为 %s 类型，实际为 %s",
+                                    top_key, sub_key,
+                                    "/".join(t.__name__ for t in expected_type),
+                                    type(sub_val).__name__,
+                                )
+                        elif expected_type is not dict and not isinstance(sub_val, expected_type):
+                            logger.warning(
+                                "配置警告: '%s.%s' 应为 %s 类型，实际为 %s",
+                                top_key, sub_key, expected_type.__name__,
+                                type(sub_val).__name__,
+                            )
 
     def get(self, dotpath: str, default=None):
         """通过点号路径获取配置值

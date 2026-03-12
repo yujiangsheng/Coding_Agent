@@ -94,10 +94,14 @@ def batch_edit(
             continue
 
         if is_regex:
-            matches = list(re.finditer(pattern, content))
+            try:
+                compiled = re.compile(pattern)
+            except re.error as e:
+                return {"error": f"正则表达式无效: {e}"}
+            matches = list(compiled.finditer(content))
             if not matches:
                 continue
-            new_content = re.sub(pattern, replacement, content)
+            new_content = compiled.sub(replacement, content)
             match_count = len(matches)
         else:
             count = content.count(pattern)
@@ -115,6 +119,13 @@ def batch_edit(
         })
 
         if not dry_run:
+            # v8.0: 写入前备份
+            backup_path = filepath.with_suffix(filepath.suffix + ".bak")
+            try:
+                import shutil
+                shutil.copy2(filepath, backup_path)
+            except OSError:
+                pass
             filepath.write_text(new_content, encoding="utf-8")
 
     # 限制输出大小
@@ -229,6 +240,13 @@ def rename_symbol(
         })
 
         if not dry_run:
+            # v8.0: 写入前备份
+            backup_path = filepath.with_suffix(filepath.suffix + ".bak")
+            try:
+                import shutil
+                shutil.copy2(filepath, backup_path)
+            except OSError:
+                pass
             filepath.write_text(new_content, encoding="utf-8")
 
     if len(results["changes"]) > 30:

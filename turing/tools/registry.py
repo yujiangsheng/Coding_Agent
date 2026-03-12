@@ -20,10 +20,40 @@ Usage::
 from __future__ import annotations
 
 import inspect
+import logging
+from enum import Enum
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 # 全局工具注册表 {name: ToolDef}
 _REGISTRY: dict[str, "ToolDef"] = {}
+
+
+class ErrorType(Enum):
+    """工具错误分类，用于决定是否可重试"""
+    TIMEOUT = "timeout"
+    INVALID_ARGS = "invalid_args"
+    NOT_FOUND = "not_found"
+    PERMISSION = "permission"
+    RUNTIME = "runtime"
+    UNKNOWN = "unknown"
+
+
+def _classify_error(exc: Exception) -> tuple[ErrorType, bool]:
+    """对异常进行分类，返回 (错误类型, 是否可重试)"""
+    import subprocess
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return ErrorType.TIMEOUT, True
+    if isinstance(exc, (TypeError, ValueError)):
+        return ErrorType.INVALID_ARGS, False
+    if isinstance(exc, FileNotFoundError):
+        return ErrorType.NOT_FOUND, False
+    if isinstance(exc, PermissionError):
+        return ErrorType.PERMISSION, False
+    if isinstance(exc, (OSError, RuntimeError)):
+        return ErrorType.RUNTIME, True
+    return ErrorType.UNKNOWN, True
 
 
 class ToolDef:
@@ -98,10 +128,10 @@ def get_ollama_tool_schemas() -> list[dict]:
 
 
 def execute_tool(name: str, arguments: dict) -> dict:
-    """执行指定工具，返回结果 dict"""
+    """执行指定工具，返回结果 dict（含错误分类信息）"""
     td = _REGISTRY.get(name)
     if td is None:
-        return {"error": f"未知工具: {name}"}
+        return {"error": f"未知工具: {name}", "error_type": ErrorType.NOT_FOUND.value, "retryable": False}
     try:
         # 只传入函数签名中接受的参数
         sig = inspect.signature(td.func)
@@ -111,4 +141,10 @@ def execute_tool(name: str, arguments: dict) -> dict:
             result = {"result": result}
         return result
     except Exception as e:
-        return {"error": f"工具 {name} 执行失败: {e}"}
+        error_type, retryable = _classify_error(e)
+        logger.error("工具 %s 执行失败 [%s]: %s", name, error_type.value, e, exc_info=True)
+        return {
+            "error": f"工具 {name} 执行失败: {e}",
+            "error_type": error_type.value,
+            "retryable": retryable,
+        }

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -127,6 +128,13 @@ class StdioTransport(MCPTransport):
         except Exception:
             self._process.kill()
 
+    def __del__(self):
+        """v7.0: 安全网 — 防止子进程泄漏"""
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 class SSETransport(MCPTransport):
     """SSE 传输：通过 HTTP POST 发送请求，通过 SSE 接收响应
@@ -138,7 +146,7 @@ class SSETransport(MCPTransport):
     def __init__(self, base_url: str, headers: dict[str, str] | None = None):
         self._base_url = base_url.rstrip("/")
         self._headers = headers or {}
-        self._response_queue: list[dict] = []
+        self._response_queue: queue.Queue = queue.Queue()
         self._sse_thread: threading.Thread | None = None
         self._running = False
         self._start_sse_listener()
@@ -150,26 +158,29 @@ class SSETransport(MCPTransport):
         self._sse_thread.start()
 
     def _listen_sse(self) -> None:
-        """后台线程：持续读取 SSE 流"""
+        """后台线程：持续读取 SSE 流（v11.0: 批量读取优化）"""
         url = f"{self._base_url}/sse"
         req = urllib.request.Request(url, headers=self._headers)
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
-                buffer = ""
+                buf = bytearray()
                 while self._running:
-                    chunk = resp.read(1).decode("utf-8", errors="replace")
+                    chunk = resp.read(4096)
                     if not chunk:
                         break
-                    buffer += chunk
-                    if buffer.endswith("\n\n"):
-                        for line in buffer.strip().split("\n"):
+                    buf.extend(chunk)
+                    # 处理完整的 SSE 消息（\n\n 分隔）
+                    while b"\n\n" in buf:
+                        msg_end = buf.index(b"\n\n") + 2
+                        raw = buf[:msg_end].decode("utf-8", errors="replace")
+                        buf = buf[msg_end:]
+                        for line in raw.strip().split("\n"):
                             if line.startswith("data: "):
                                 data_str = line[6:]
                                 try:
-                                    self._response_queue.append(json.loads(data_str))
+                                    self._response_queue.put(json.loads(data_str))
                                 except json.JSONDecodeError:
                                     pass
-                        buffer = ""
         except Exception as e:
             logger.warning("MCP SSE 连接断开: %s", e)
 
@@ -189,12 +200,10 @@ class SSETransport(MCPTransport):
             raise ConnectionError(f"MCP SSE POST 失败: {e}") from e
 
     def receive(self, timeout: float = 30.0) -> dict | None:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._response_queue:
-                return self._response_queue.pop(0)
-            time.sleep(0.05)
-        return None
+        try:
+            return self._response_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     def close(self) -> None:
         self._running = False
@@ -235,9 +244,13 @@ class MCPClient:
         """通过 stdio 连接本地 MCP 服务器"""
         name = server_name or command[0].split("/")[-1]
         transport = StdioTransport(command, env=env)
-        client = cls(transport, server_name=name)
-        client._handshake()
-        return client
+        try:
+            client = cls(transport, server_name=name)
+            client._handshake()
+            return client
+        except Exception:
+            transport.close()
+            raise
 
     @classmethod
     def from_sse(

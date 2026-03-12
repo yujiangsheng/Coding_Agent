@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,41 @@ class MCPServer:
         if tool_name.startswith("mcp::") or tool_name.startswith("mcp_"):
             return {
                 "content": [{"type": "text", "text": f"不允许通过 MCP 调用 MCP 工具: {tool_name}"}],
+                "isError": True,
+            }
+
+        # v10.0: SafetyGuard 权限检查（与 agent 主循环一致）
+        from turing.safety import SafetyGuard, Permission
+        guard = SafetyGuard()
+        # v11.0: 加载项目级安全规则（仅限制性规则）
+        try:
+            import yaml as _yaml
+            from turing.config import Config as _Cfg
+            _ws = _Cfg.load().get("security.workspace_root", ".")
+            for _rf in (".turing-rules", ".turing-rules.yaml", ".turing-rules.yml"):
+                _rp = Path(_ws) / _rf
+                if _rp.is_file():
+                    _rules = _yaml.safe_load(_rp.read_text(encoding="utf-8")) or {}
+                    safe = {}
+                    if isinstance(_rules.get("deny_tools"), list):
+                        safe["deny_tools"] = _rules["deny_tools"]
+                    if isinstance(_rules.get("confirm_patterns"), list):
+                        safe["confirm_patterns"] = _rules["confirm_patterns"]
+                    if safe:
+                        guard.load_project_rules(safe)
+                    break
+        except Exception:
+            pass
+        perm, perm_msg = guard.check_permission(tool_name, arguments)
+        if perm == Permission.DENY:
+            return {
+                "content": [{"type": "text", "text": f"安全策略拒绝执行: {perm_msg}"}],
+                "isError": True,
+            }
+        if perm == Permission.CONFIRM:
+            # MCP 调用无法交互确认，默认拒绝需要确认的操作
+            return {
+                "content": [{"type": "text", "text": f"操作需要用户确认（MCP 模式下自动拒绝）: {perm_msg}"}],
                 "isError": True,
             }
 

@@ -14,11 +14,90 @@ Fallback 链: primary → secondary → fallback，任一失败自动降级。
 from __future__ import annotations
 
 import logging
+import re
+import time
+from collections import defaultdict, deque
 from typing import Any
 
 from turing.llm.provider import LLMProvider, create_provider
 
 logger = logging.getLogger(__name__)
+
+# v9.0: 敏感信息清洗正则
+_SENSITIVE_RE = re.compile(
+    r'(api[_-]?key|apikey|authorization|bearer|secret|token)\s*[:=]\s*\S+',
+    re.IGNORECASE,
+)
+
+
+def _scrub_sensitive(text: str) -> str:
+    """从错误消息中清除可能泄漏的 API 密钥等敏感信息"""
+    return _SENSITIVE_RE.sub(r'\1=***REDACTED***', text)
+
+
+class _ProviderStats:
+    """Provider 性能统计跟踪（v9.0: 增加熔断器）"""
+
+    CIRCUIT_THRESHOLD = 3       # 连续失败次数阈值
+    CIRCUIT_COOLDOWN = 60.0     # 熔断器冷却秒数
+
+    def __init__(self, max_history: int = 100):
+        self.latencies: deque[float] = deque(maxlen=max_history)
+        self.successes: int = 0
+        self.failures: int = 0
+        self.total_tokens: int = 0
+        # v9.0 熔断器状态
+        self._consecutive_failures: int = 0
+        self._circuit_open_until: float = 0.0
+
+    @property
+    def avg_latency(self) -> float:
+        return sum(self.latencies) / len(self.latencies) if self.latencies else 0.0
+
+    @property
+    def p95_latency(self) -> float:
+        if not self.latencies:
+            return 0.0
+        sorted_l = sorted(self.latencies)
+        idx = int(len(sorted_l) * 0.95)
+        return sorted_l[min(idx, len(sorted_l) - 1)]
+
+    @property
+    def success_rate(self) -> float:
+        total = self.successes + self.failures
+        return self.successes / total if total > 0 else 1.0
+
+    def record_success(self, latency: float, tokens: int = 0):
+        self.latencies.append(latency)
+        self.successes += 1
+        self.total_tokens += tokens
+        self._consecutive_failures = 0   # v9.0: 成功后重置熔断器
+
+    def record_failure(self, latency: float):
+        self.latencies.append(latency)
+        self.failures += 1
+        # v9.0: 熔断器逻辑
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.CIRCUIT_THRESHOLD:
+            self._circuit_open_until = time.monotonic() + self.CIRCUIT_COOLDOWN
+
+    def is_circuit_open(self) -> bool:
+        """v9.0: 检查熔断器是否处于断开状态"""
+        if self._consecutive_failures < self.CIRCUIT_THRESHOLD:
+            return False
+        if time.monotonic() >= self._circuit_open_until:
+            # 冷却期已过，允许半开探测
+            return False
+        return True
+
+    def to_dict(self) -> dict:
+        return {
+            "avg_latency_ms": round(self.avg_latency * 1000, 1),
+            "p95_latency_ms": round(self.p95_latency * 1000, 1),
+            "success_rate": round(self.success_rate, 3),
+            "total_calls": self.successes + self.failures,
+            "total_tokens": self.total_tokens,
+        }
 
 
 class ModelRouter:
@@ -29,6 +108,7 @@ class ModelRouter:
         self._fallback_chain: list[str] = []
         self._routing_rules: dict[str, str] = {}
         self._default: str = ""
+        self._stats: dict[str, _ProviderStats] = defaultdict(_ProviderStats)
 
         if config:
             self._init_from_config(config)
@@ -67,14 +147,15 @@ class ModelRouter:
 
         # 初始化 providers
         for name, pcfg in llm_cfg.get("providers", {}).items():
-            provider_type = pcfg.pop("type", name)
+            # v9.0: 不再 pop("type")，避免永久 mutate 原始配置
+            provider_type = pcfg.get("type", name)
+            init_args = {k: v for k, v in pcfg.items() if k != "type"}
             try:
-                self._providers[name] = create_provider(provider_type, **pcfg)
+                self._providers[name] = create_provider(provider_type, **init_args)
                 logger.info(f"已注册 LLM provider: {name} ({provider_type})")
             except Exception as e:
-                logger.warning(f"初始化 provider {name} 失败: {e}")
-                # 把 type 放回去以防后续重试
-                pcfg["type"] = provider_type
+                safe_msg = _scrub_sensitive(str(e))
+                logger.warning("初始化 provider %s 失败: %s", name, safe_msg)
 
         # 路由规则
         self._routing_rules = llm_cfg.get("routing", {
@@ -149,17 +230,28 @@ class ModelRouter:
         for name in chain:
             if name not in self._providers:
                 continue
+            # v9.0: 熔断器检查
+            if self._stats[name].is_circuit_open() and name != chain[-1]:
+                logger.debug("熔断器断开，跳过 provider: %s", name)
+                continue
             provider = self._providers[name]
+            t0 = time.monotonic()
             try:
                 result = provider.chat(messages, tools=tools, temperature=temperature, **kwargs)
+                latency = time.monotonic() - t0
+                self._stats[name].record_success(latency)
                 if name != chain[0]:
                     logger.info(f"已 fallback 到 provider: {name}")
                 return result
             except Exception as e:
+                latency = time.monotonic() - t0
+                self._stats[name].record_failure(latency)
                 last_error = e
-                logger.warning(f"Provider {name} 调用失败: {e}，尝试 fallback...")
+                # v9.0: 清洗错误消息中的敏感信息
+                safe_msg = _scrub_sensitive(str(e))
+                logger.warning("Provider %s 调用失败: %s，尝试 fallback...", name, safe_msg)
 
-        raise RuntimeError(f"所有 provider 均失败，最后错误: {last_error}")
+        raise RuntimeError(f"所有 provider 均失败，最后错误: {type(last_error).__name__}")
 
     def stream_chat(
         self,
@@ -181,15 +273,25 @@ class ModelRouter:
         for name in chain:
             if name not in self._providers:
                 continue
+            # v9.0: 熔断器检查
+            if self._stats[name].is_circuit_open() and name != chain[-1]:
+                logger.debug("熔断器断开，跳过 stream provider: %s", name)
+                continue
             provider = self._providers[name]
+            t0 = time.monotonic()
             try:
                 result = provider.stream_chat(messages, tools=tools, temperature=temperature, **kwargs)
+                latency = time.monotonic() - t0
+                self._stats[name].record_success(latency)
                 return result
             except Exception as e:
+                latency = time.monotonic() - t0
+                self._stats[name].record_failure(latency)
                 last_error = e
-                logger.warning(f"Provider {name} stream 失败: {e}，尝试 fallback...")
+                safe_msg = _scrub_sensitive(str(e))
+                logger.warning("Provider %s stream 失败: %s，尝试 fallback...", name, safe_msg)
 
-        raise RuntimeError(f"所有 provider stream 均失败，最后错误: {last_error}")
+        raise RuntimeError(f"所有 provider stream 均失败，最后错误: {type(last_error).__name__}")
 
     def get_context_length(self, provider_name: str | None = None) -> int:
         """获取指定 provider 的上下文窗口大小"""
@@ -197,5 +299,14 @@ class ModelRouter:
         return provider.context_length
 
     def list_providers(self) -> list[dict]:
-        """列出所有已注册 provider 的信息"""
-        return [p.get_info() for p in self._providers.values()]
+        """列出所有已注册 provider 的信息（含性能统计）"""
+        result = []
+        for name, provider in self._providers.items():
+            info = provider.get_info()
+            info["stats"] = self._stats[name].to_dict()
+            result.append(info)
+        return result
+
+    def get_provider_stats(self) -> dict:
+        """获取所有 provider 的性能统计摘要"""
+        return {name: stats.to_dict() for name, stats in self._stats.items()}

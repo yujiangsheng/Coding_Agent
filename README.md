@@ -4,14 +4,15 @@
 
 **自进化编程智能体 · Self-Evolving Coding Agent**
 
-*多模型 AI Coding Agent，具备四层记忆、80 内置工具、MCP 协议集成、多 Provider LLM 路由、基准评测、元认知、自我演化、竞争力驱动进化*
+*多模型 AI Coding Agent，具备四层记忆、82 内置工具、MCP 协议集成、多 Provider LLM 路由、基准评测、元认知、自我演化、竞争力驱动进化、VS Code 扩展*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-green.svg)](https://python.org)
 [![Model: Multi-Provider](https://img.shields.io/badge/Model-Ollama%20%7C%20OpenAI%20%7C%20Anthropic%20%7C%20DeepSeek-orange.svg)](https://ollama.com)
-[![Version](https://img.shields.io/badge/Version-3.5.0-purple.svg)](CONTRIBUTING.md)
-[![Tools](https://img.shields.io/badge/Tools-80-brightgreen.svg)](#-工具一览80-工具19-个模块)
+[![Version](https://img.shields.io/badge/Version-3.6.0-purple.svg)](CONTRIBUTING.md)
+[![Tools](https://img.shields.io/badge/Tools-82-brightgreen.svg)](#-工具一览82-工具19-个模块)
 [![Tests](https://img.shields.io/badge/Tests-21%20passed-success.svg)](tests/)
+[![VS Code](https://img.shields.io/badge/VS%20Code-Extension-007ACC.svg)](vscode-extension/)
 
 </div>
 
@@ -22,7 +23,7 @@
 ### 核心能力
 
 - **🧠 四层记忆系统** — 工作记忆 / 长期记忆 / 持久记忆 / 外部记忆（RAG），TF-IDF 中文检索，越用越懂你
-- **🔧 80 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析 + 依赖图、自动修复、安全扫描、批量重构、基准评测、MCP 外部工具集成、竞争力分析等
+- **🔧 82 内置工具** — 文件管理（含 diff 预览 + 原子化多文件编辑）、持久化 Shell 会话（env/cwd 跨调用保持 + 后台进程管理）、Git 完整工作流、代码搜索 + Repo Map + 智能上下文、测试运行（覆盖率 + 失败详情）、AST 代码分析 + 依赖图、自动修复、安全扫描、批量重构、基准评测、MCP 外部工具集成、竞争力分析、URL 网页内容获取等
 - **🔌 MCP 协议集成** — 通过 Model Context Protocol 连接外部工具服务器（stdio/SSE），自动发现并注册外部工具；可作为 MCP 服务端暴露自身工具给 Claude Code / Cursor / VS Code（对标 Claude Code 工具扩展）
 - **🤖 多 Provider LLM 路由** — 支持 Ollama / OpenAI / Anthropic / DeepSeek，按任务复杂度自动路由到最优模型，失败时自动 fallback
 - **📊 基准评测框架** — 内置 12 道 HumanEval 风格编程题，pass@k 评分 + 业界分数对比（Claude Opus / GPT-4o / Gemini），自修复评测
@@ -35,6 +36,11 @@
 - **🏠 本地优先** — 默认基于 Ollama 本地部署，可选接入云端 LLM
 - **🏆 竞争力驱动进化** — 自动对标 7 大竞品（Claude Code/Cursor/Copilot/Devin/Aider/Codex/Windsurf），16 维能力矩阵驱动改进
 - **🔌 LSP 代码补全** — 内置 LSP 服务器，基于 AST 分析的代码补全能力（`python -m turing.lsp`）
+- **🖥️ VS Code 扩展** — 侧边栏聊天面板 + 代码解释 + MCP 协议通信，在 IDE 中直接使用 Turing 全部能力
+- **🌐 URL 内容获取** — `fetch_url` 工具直接获取网页内容，支持 HTML 正文提取、编码检测、SSRF 防护
+- **🔗 智能依赖追踪** — 用户提及文件时自动分析 import 链，将依赖模块结构摘要注入上下文
+- **💰 Prompt Caching** — Anthropic `cache_control: ephemeral` 缓存 system prompt，降低 ~90% 重复成本
+- **🖼️ 多模态图片输入** — 三大 Provider 均支持图片理解（文件 / URL / base64）
 
 ### 对标顶尖工具的能力（v3.5）
 
@@ -247,7 +253,7 @@ You > 帮我写一个快速排序算法
 10. **自训练模拟器** — 生成合成任务并自我训练，持续提升弱项
 11. **元认知监控** — 6 维认知雷达（计划质量 / 工具效率 / 错误恢复 / 创造性 / 专注度 / 综合），偏差检测与置信校准
 
-## 🔧 工具一览（80 工具，19 个模块）
+## 🔧 工具一览（82 工具，19 个模块）
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -296,8 +302,9 @@ You > 帮我写一个快速排序算法
 | **记忆管理 (3)** | `memory_read` | 检索记忆（working/long_term/persistent） |
 | | `memory_write` | 写入记忆 |
 | | `memory_reflect` | 任务反思 |
-| **外部搜索 (2)** | `rag_search` | RAG 本地文档检索（查询扩展 + 代码分块） |
+| **外部搜索 (3)** | `rag_search` | RAG 本地文档检索（查询扩展 + 代码分块） |
 | | `web_search` | DuckDuckGo 搜索 |
+| | `fetch_url` | 获取指定 URL 网页内容（HTML 正文提取 + SSRF 防护） |
 | **自我演化 (12)** | `learn_from_ai_tool` | 学习 AI 工具策略 |
 | | `gap_analysis` | 能力差距分析 + 改进路线图 |
 | | `evolve_strategies` | 批量策略进化 |
@@ -354,6 +361,85 @@ python web/server.py --host 0.0.0.0   # 允许外部访问
 | POST | `/api/index-project` | 索引项目到 RAG |
 | GET | `/api/files/list?path=` | 列出目录 |
 | GET | `/api/files/read?path=` | 读取文件 |
+
+## 🖥️ VS Code Extension
+
+Turing 提供原生 VS Code 扩展，通过 MCP 协议连接 Turing 的全部 82 个工具：
+
+```
+VS Code Extension ←→ MCP stdio ←→ Turing Agent (Python)
+     │                                    │
+     ├── Chat Webview (侧边栏)             ├── 82 Tools
+     ├── Explain Selection (右键菜单)       ├── 4-Layer Memory
+     └── Apply Diff (代码应用)              └── Multi-LLM Router
+```
+
+### 安装与使用
+
+```bash
+# 开发模式运行
+cd vscode-extension
+npm install
+npm run compile
+# 按 F5 启动 Extension Development Host
+```
+
+### 功能特性
+
+| 功能 | 说明 |
+|------|------|
+| 侧边栏聊天面板 | 类似 Copilot Chat 的 AI 对话界面 |
+| 代码解释 | 选中代码 → 右键 → "Turing: Explain Selected Code" |
+| MCP 协议通信 | 通过 stdio 子进程连接 Turing 的全部工具 |
+| VS Code 原生主题 | 自动适配亮色/暗色主题 |
+
+> 详细文档请参考 [vscode-extension/README.md](vscode-extension/README.md)
+
+## 🔌 MCP 集成
+
+Turing 同时支持 MCP 客户端和服务端，实现双向工具生态扩展：
+
+### 作为 MCP 服务端（暴露工具给外部 AI 客户端）
+
+```bash
+# 启动 MCP 服务器，暴露全部工具给 Claude Code / Cursor / VS Code 等
+python -m turing.mcp.server
+```
+
+### 作为 MCP 客户端（连接外部工具服务器）
+
+```yaml
+# config.yaml
+mcp:
+  servers:
+    filesystem:
+      transport: stdio
+      command: ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    github:
+      transport: sse
+      url: http://localhost:3000/sse
+      headers:
+        Authorization: "Bearer ghp_xxx"
+```
+
+### Python API 集成
+
+```python
+from turing.agent import TuringAgent
+
+# 创建 Agent 实例
+agent = TuringAgent()
+agent.start_session()
+
+# 流式对话
+for event in agent.chat("帮我写一个 REST API"):
+    if event["type"] == "text":
+        print(event["content"])
+    elif event["type"] == "tool_call":
+        print(f"🔧 调用: {event['name']}")
+    elif event["type"] == "done":
+        break
+```
 
 ## 🗂 数据目录结构
 
@@ -456,9 +542,10 @@ security:
 | v3.3 | **竞争力分析引擎**：自动对标 7 大竞品（Claude Code/Cursor/Copilot/Devin/Aider/Codex/Windsurf）、16 维能力矩阵、竞争力驱动进化、改进路线图生成、趋势追踪（69 工具） | ✅ 已完成 |
 | v3.4 | **竞争力驱动第一轮补全**：context_budget / task_plan / checkpoint_save/restore / test_coverage / security_scan / pr_summary、detect_project 增强（CI/CD + Monorepo）、多路径推理 + 上下文预算管理提示（76 工具） | ✅ 已完成 |
 | v3.5 | **竞争力驱动第二轮补全**：context_compress / dependency_graph / auto_fix / verify_hypothesis、LSP 补全服务器（python -m turing.lsp）、增强型上下文压缩、竞争力评分排名 1/8（0.864）（80 工具、21 测试通过） | ✅ 已完成 |
+| v3.6 | **用户体验 + IDE 集成**：fetch_url 网页获取工具、AST 智能依赖上下文自动注入、Prompt Caching、多模态图片输入、VS Code Extension 骨架（82 工具，21 测试通过） | ✅ 已完成 |
 | v2.2 | 沙箱隔离（Docker 容器化代码执行） | 📋 计划中 |
-| v2.3 | 多模态支持（图片/截图/UML 理解） | 📋 计划中 |
-| v2.4 | IDE 插件（VS Code Extension） | 📋 计划中 |
+| v2.3 | 多模态支持（图片/截图/UML 理解） | ✅ 已完成（v3.6) |
+| v2.4 | IDE 插件（VS Code Extension） | ✅ 已完成（v3.6） |
 
 ## 📄 License
 

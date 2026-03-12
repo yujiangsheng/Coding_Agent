@@ -448,9 +448,16 @@ def call_graph(path: str, target_function: str = None) -> dict:
                 for child in ast.walk(node):
                     if isinstance(child, ast.Call):
                         callee = _call_name(child)
-                        if callee and callee in all_defs and callee != caller:
-                            calls[caller].add(callee)
-                            callers[callee].add(caller)
+                        # v6.0: qualified name — 先完整匹配，再回退到裸名
+                        if callee and callee != caller:
+                            if callee in all_defs:
+                                calls[caller].add(callee)
+                                callers[callee].add(caller)
+                            else:
+                                bare = callee.rsplit(".", 1)[-1]
+                                if bare in all_defs and bare != caller:
+                                    calls[caller].add(bare)
+                                    callers[bare].add(caller)
 
     # 如果聚焦某个函数
     if target_function:
@@ -647,11 +654,13 @@ def _name_of(node) -> str:
 
 
 def _call_name(node: ast.Call) -> str:
-    """从 Call 节点提取被调用函数的名称"""
+    """从 Call 节点提取被调用函数的名称（v6.0: 返回限定名避免假边）"""
     if isinstance(node.func, ast.Name):
         return node.func.id
     elif isinstance(node.func, ast.Attribute):
-        return node.func.attr
+        # 返回 "obj.method" 而非仅 "method"，避免同名方法产生假边
+        value = _name_of(node.func.value)
+        return f"{value}.{node.func.attr}" if value else node.func.attr
     return ""
 
 

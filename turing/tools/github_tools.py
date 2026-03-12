@@ -14,6 +14,7 @@ import json
 import os
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import Any
 
 from turing.tools.registry import tool
@@ -30,6 +31,14 @@ def _get_github_token() -> str:
         except Exception:
             pass
     return token
+
+
+def _gh_path(owner: str, repo: str, resource: str, **query_params) -> str:
+    """构建 URL-safe 的 GitHub API 路径（v7.0: 防路径注入）"""
+    path = f"/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(repo, safe='')}/{resource}"
+    if query_params:
+        path += "?" + urllib.parse.urlencode(query_params)
+    return path
 
 
 def _github_api(
@@ -103,7 +112,7 @@ def github_create_issue(
         data["body"] = body
     if labels:
         data["labels"] = labels
-    result = _github_api("POST", f"/repos/{owner}/{repo}/issues", data)
+    result = _github_api("POST", _gh_path(owner, repo, "issues"), data)
     if "error" in result:
         return result
     return {
@@ -138,7 +147,7 @@ def github_create_pr(
     data = {"title": title, "head": head, "base": base}
     if body:
         data["body"] = body
-    result = _github_api("POST", f"/repos/{owner}/{repo}/pulls", data)
+    result = _github_api("POST", _gh_path(owner, repo, "pulls"), data)
     if "error" in result:
         return result
     return {
@@ -171,7 +180,7 @@ def github_list_issues(
     owner: str, repo: str, state: str = "open", limit: int = 10,
 ) -> dict:
     """列出 GitHub Issue"""
-    result = _github_api("GET", f"/repos/{owner}/{repo}/issues?state={state}&per_page={limit}")
+    result = _github_api("GET", _gh_path(owner, repo, "issues", state=state, per_page=limit))
     if isinstance(result, dict) and "error" in result:
         return result
     if isinstance(result, list):
@@ -210,7 +219,7 @@ def github_add_comment(
     """添加评论到 Issue/PR"""
     result = _github_api(
         "POST",
-        f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+        _gh_path(owner, repo, f"issues/{int(issue_number)}/comments"),
         {"body": body},
     )
     if "error" in result:
@@ -243,7 +252,7 @@ def github_list_prs(
     owner: str, repo: str, state: str = "open", limit: int = 10,
 ) -> dict:
     """列出 GitHub Pull Request"""
-    result = _github_api("GET", f"/repos/{owner}/{repo}/pulls?state={state}&per_page={limit}")
+    result = _github_api("GET", _gh_path(owner, repo, "pulls", state=state, per_page=limit))
     if isinstance(result, dict) and "error" in result:
         return result
     if isinstance(result, list):

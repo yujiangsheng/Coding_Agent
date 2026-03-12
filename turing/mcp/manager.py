@@ -46,6 +46,23 @@ class MCPManager:
         self._clients: dict[str, MCPClient] = {}   # name → connected client
         self._registered_tools: dict[str, str] = {}  # turing_tool_name → server_name
         self._readonly_tools: set[str] = set()      # MCP 只读工具集合
+        # v9.0: 注册 atexit 清理，防止 MCP 子进程泻漏
+        import atexit
+        atexit.register(self._atexit_cleanup)
+
+    def _atexit_cleanup(self) -> None:
+        """进程退出时断开所有 MCP 服务器"""
+        try:
+            self.disconnect_all()
+        except Exception:
+            pass
+
+    def __del__(self):
+        """v9.0: 安全网 — GC 回收时确保断开"""
+        try:
+            self.disconnect_all()
+        except Exception:
+            pass
 
     def load_from_config(self, mcp_config: dict) -> None:
         """从配置字典加载 MCP 服务器定义

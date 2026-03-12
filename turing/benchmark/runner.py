@@ -377,8 +377,10 @@ class BenchmarkRunner:
         return report
 
     def _run_single_swebench(self, task: SWEBenchTask) -> dict:
-        """执行单个 SWE-bench 任务"""
+        """执行单个 SWE-bench 任务（v4.0 — 隔离执行）"""
+        import shlex
         import subprocess
+        import tempfile
 
         task_start = time.time()
         result = {
@@ -393,72 +395,107 @@ class BenchmarkRunner:
             result["duration"] = round(time.time() - task_start, 2)
             return result
 
-        # 1. 切换到基准 commit
+        # ── 隔离：使用 git worktree 创建独立工作目录 ──
+        work_dir = None
+        worktree_name = f"turing-bench-{task.task_id[:12]}"
         try:
-            subprocess.run(
-                ["git", "checkout", task.base_commit],
-                cwd=str(repo_path), capture_output=True, timeout=30,
+            work_dir = tempfile.mkdtemp(prefix="turing_swe_")
+            wt_result = subprocess.run(
+                ["git", "worktree", "add", work_dir, task.base_commit],
+                cwd=str(repo_path), capture_output=True, text=True, timeout=30,
             )
+            if wt_result.returncode != 0:
+                # Fallback: 克隆到临时目录
+                import shutil
+                shutil.rmtree(work_dir, ignore_errors=True)
+                work_dir = tempfile.mkdtemp(prefix="turing_swe_")
+                subprocess.run(
+                    ["git", "clone", "--quiet", str(repo_path), work_dir],
+                    capture_output=True, timeout=120,
+                )
+                subprocess.run(
+                    ["git", "checkout", task.base_commit],
+                    cwd=work_dir, capture_output=True, timeout=30,
+                )
+            # 后续操作使用隔离目录
+            isolated_path = Path(work_dir)
         except Exception as e:
-            result["error"] = f"切换 commit 失败: {e}"
+            result["error"] = f"创建隔离环境失败: {e}"
+            result["duration"] = round(time.time() - task_start, 2)
+            if work_dir:
+                import shutil
+                shutil.rmtree(work_dir, ignore_errors=True)
+            return result
+
+        # 以下操作均在 isolated_path（隔离目录）中执行
+        try:
+            # 2. 应用测试补丁
+            if task.test_patch:
+                try:
+                    proc = subprocess.run(
+                        ["git", "apply", "--check", "-"],
+                        input=task.test_patch.encode(),
+                        cwd=str(isolated_path), capture_output=True, timeout=15,
+                    )
+                    if proc.returncode == 0:
+                        subprocess.run(
+                            ["git", "apply", "-"],
+                            input=task.test_patch.encode(),
+                            cwd=str(isolated_path), capture_output=True, timeout=15,
+                        )
+                except Exception:
+                    pass
+
+            # 3. 使用 Agent 生成修复
+            if self.agent is None:
+                result["error"] = "Agent 未配置"
+                result["duration"] = round(time.time() - task_start, 2)
+                return result
+
+            try:
+                prompt = (
+                    f"请修复以下问题。仓库路径: {isolated_path}\n\n"
+                    f"问题描述:\n{task.description}\n\n"
+                    f"请直接修改相关文件来修复问题。"
+                )
+                for event in self.agent.chat(prompt):
+                    pass
+            except Exception as e:
+                result["error"] = f"Agent 执行失败: {e}"
+                result["duration"] = round(time.time() - task_start, 2)
+                return result
+
+            # 4. 运行测试验证（使用 shlex.split 安全解析命令）
+            try:
+                test_args = shlex.split(task.test_cmd)
+                proc = subprocess.run(
+                    test_args,
+                    cwd=str(isolated_path),
+                    capture_output=True, timeout=120,
+                    text=True,
+                )
+                result["test_output"] = proc.stdout[-2000:] if proc.stdout else ""
+                result["test_returncode"] = proc.returncode
+                result["resolved"] = proc.returncode == 0
+            except subprocess.TimeoutExpired:
+                result["error"] = "测试超时"
+            except Exception as e:
+                result["error"] = f"测试执行失败: {e}"
+
             result["duration"] = round(time.time() - task_start, 2)
             return result
 
-        # 2. 应用测试补丁
-        if task.test_patch:
-            try:
-                proc = subprocess.run(
-                    ["git", "apply", "--check", "-"],
-                    input=task.test_patch.encode(),
-                    cwd=str(repo_path), capture_output=True, timeout=15,
-                )
-                if proc.returncode == 0:
+        finally:
+            # 清理隔离环境
+            if work_dir:
+                try:
                     subprocess.run(
-                        ["git", "apply", "-"],
-                        input=task.test_patch.encode(),
+                        ["git", "worktree", "remove", "--force", work_dir],
                         cwd=str(repo_path), capture_output=True, timeout=15,
                     )
-            except Exception:
-                pass
-
-        # 3. 使用 Agent 生成修复
-        if self.agent is None:
-            result["error"] = "Agent 未配置"
-            result["duration"] = round(time.time() - task_start, 2)
-            return result
-
-        try:
-            prompt = (
-                f"请修复以下问题。仓库路径: {task.repo_path}\n\n"
-                f"问题描述:\n{task.description}\n\n"
-                f"请直接修改相关文件来修复问题。"
-            )
-            # 运行 Agent
-            for event in self.agent.chat(prompt):
-                pass  # 消费所有事件
-        except Exception as e:
-            result["error"] = f"Agent 执行失败: {e}"
-            result["duration"] = round(time.time() - task_start, 2)
-            return result
-
-        # 4. 运行测试验证
-        try:
-            proc = subprocess.run(
-                task.test_cmd.split(),
-                cwd=str(repo_path),
-                capture_output=True, timeout=120,
-                text=True,
-            )
-            result["test_output"] = proc.stdout[-2000:] if proc.stdout else ""
-            result["test_returncode"] = proc.returncode
-            result["resolved"] = proc.returncode == 0
-        except subprocess.TimeoutExpired:
-            result["error"] = "测试超时"
-        except Exception as e:
-            result["error"] = f"测试执行失败: {e}"
-
-        result["duration"] = round(time.time() - task_start, 2)
-        return result
+                except Exception:
+                    import shutil
+                    shutil.rmtree(work_dir, ignore_errors=True)
 
     def _get_builtin_swebench_tasks(self) -> list[SWEBenchTask]:
         """内置的 SWE-bench 示例任务（需要本地仓库）"""

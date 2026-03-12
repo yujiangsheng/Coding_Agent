@@ -81,6 +81,7 @@ class LLMProvider(ABC):
         self.model = model
         self.temperature = temperature
         self.context_length: int = kwargs.get("context_length", 32768)
+        self._max_retries: int = kwargs.get("max_retries", 3)
 
     @abstractmethod
     def chat(
@@ -103,6 +104,52 @@ class LLMProvider(ABC):
     ) -> dict:
         """流式聊天，返回组装后的完整消息（与 chat 返回格式一致）。"""
         ...
+
+    def chat_with_retry(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        **kwargs,
+    ) -> dict:
+        """带指数退避重试的聊天方法
+
+        在网络错误、超时、速率限制时自动重试；
+        流式调用失败时自动降级为非流式。
+        """
+        import time as _time
+
+        method = self.stream_chat if stream else self.chat
+        last_error = None
+
+        for attempt in range(self._max_retries):
+            try:
+                return method(messages, tools=tools, temperature=temperature, **kwargs)
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # 不可重试的错误：认证、无效请求
+                if any(kw in error_str for kw in ("auth", "invalid_api_key", "401", "403")):
+                    raise
+
+                logger.warning(
+                    "LLM 调用失败 (尝试 %d/%d): %s",
+                    attempt + 1, self._max_retries, e,
+                )
+
+                # 流式调用失败，降级为非流式
+                if stream and attempt == 0:
+                    logger.info("流式调用失败，降级为非流式重试")
+                    method = self.chat
+
+                # 指数退避
+                if attempt < self._max_retries - 1:
+                    backoff = min(2 ** attempt, 10)
+                    _time.sleep(backoff)
+
+        raise last_error  # type: ignore[misc]
 
     @property
     def provider_name(self) -> str:

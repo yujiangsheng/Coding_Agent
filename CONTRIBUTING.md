@@ -26,18 +26,18 @@ pytest
 ├── requirements.txt           # 运行时依赖清单
 ├── coding_agent_prompt.md     # Agent Prompt 设计文档
 ├── turing/
-│   ├── __init__.py            # 包定义（版本号 v3.5.0）
+│   ├── __init__.py            # 包定义（版本号 v3.6.0）
 │   ├── agent.py               # Agent 主循环（10 阶段流水线 + 元认知 + Token-aware）
 │   ├── config.py              # YAML 配置管理（单例 + 深度合并）
 │   ├── prompt.py              # System Prompt（28 能力声明 + 21 专题段落 + CoT + ETF）
-│   ├── tools/                 # 工具集（80 工具，19 个模块）
+│   ├── tools/                 # 工具集（82 工具，19 个模块）
 │   │   ├── __init__.py        # 工具系统概述
 │   │   ├── registry.py        # @tool 装饰器 + Ollama Schema + 安全调度
 │   │   ├── file_tools.py      # 文件操作 (9): read/write/edit/generate/multi_edit/move/copy/delete/find
 │   │   ├── command_tools.py   # 命令执行 (5): 持久化 Shell + 后台进程管理 + 自动修复
 │   │   ├── search_tools.py    # 代码搜索 (6): search_code / list_directory / repo_map / smart_context / context_budget / context_compress
 │   │   ├── memory_tools.py    # 记忆管理 (3): read / write / reflect
-│   │   ├── external_tools.py  # 外部搜索 (2): rag_search / web_search
+│   │   ├── external_tools.py  # 外部搜索 (3): rag_search / web_search / fetch_url
 │   │   ├── evolution_tools.py # 自我演化 (12): 策略进化 + 蒸馏 + 失败恢复 + 自训练 + 竞争力分析 + 假设验证
 │   │   ├── git_tools.py       # Git 操作 (8): status/diff/log/blame/add/commit/branch/stash
 │   │   ├── project_tools.py   # 项目分析 (2): detect_project / analyze_dependencies
@@ -71,6 +71,11 @@ pytest
 │   ├── server.py              # HTTP API + SSE 聊天服务（9 个 API 端点）
 │   ├── templates/index.html   # VS Code 风格前端
 │   └── static/                # CSS + JS 静态资源
+├── vscode-extension/          # VS Code 原生扩展 (v3.6)
+│   ├── src/extension.ts       # 扩展入口 + 命令注册
+│   ├── src/mcpClient.ts       # MCP stdio 客户端 (JSON-RPC 2.0)
+│   ├── src/chatView.ts        # 聊天面板 Webview Provider
+│   └── package.json           # 扩展清单
 ├── tests/                     # 测试套件（21 项全通过）
 ├── docs/
 │   ├── EXAMPLES.md            # 详细使用示例（20+ 场景）
@@ -167,6 +172,19 @@ import turing.tools.my_tools  # noqa: F401
 - 所有 docstring 使用中文
 - 变量和函数名使用英文 snake_case
 - 类名使用英文 PascalCase
+
+## VS Code 扩展开发
+
+```bash
+cd vscode-extension
+npm install
+npm run compile
+```
+
+- 按 F5 启动扩展调试宿主（Extension Development Host）
+- MCP 通信逻辑在 `src/mcpClient.ts`，通过 stdio 启动 `python -m turing.mcp.server`
+- 聊天面板 Webview 在 `src/chatView.ts`，使用 HTML/CSS/JS 渲染
+- 如需添加新命令，在 `package.json` 的 `contributes.commands` 中注册，然后在 `src/extension.ts` 中实现
 
 ## License
 

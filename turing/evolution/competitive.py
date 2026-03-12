@@ -1012,8 +1012,13 @@ class CompetitiveIntelligence:
 
     def _load_history(self) -> list[dict]:
         if self._analysis_path.exists():
-            with open(self._analysis_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(self._analysis_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
         return []
 
     def _save_history(self):
